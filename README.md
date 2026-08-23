@@ -12,9 +12,9 @@
 
 ## 🚀 一键部署
 
-[![Deploy to Glitch](https://cdn.glitch.global/0ff8e3c5-2b7e-4b8e-9b6a-7f0f1f2f3f4f/glitch-button.svg)](https://glitch.com/edit/#!/import/github/yourusername/tang-chat)
+[![Deploy to Glitch](https://cdn.glitch.global/0ff8e3c5-2b7e-4b8e-9b6a-7f0f1f2f3f4f/glitch-button.svg)](https://glitch.com/edit/#!/import/github/18266931-max/tang-chat)
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/yourusername/tang-chat)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/18266931-max/tang-chat)
 
 > 替换 `yourusername` 为你的 GitHub 用户名。部署后访问平台分配的网址即可。
 
