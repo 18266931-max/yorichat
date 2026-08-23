@@ -1,0 +1,26 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Dependencies & builds
+node_modules
+dist
+dist-ssr
+
+# Runtime data & secrets（绝不能提交）
+server/*.json
+server/uploads/
+server/.secret
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.local
+
+# Windows dev helper
+start-vite.bat
