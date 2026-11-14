@@ -32,12 +32,16 @@ const GROUP_MESSAGES_FILE = join(DATA_DIR, 'group_messages.json');
 const CONV_SETTINGS_FILE = join(DATA_DIR, 'conv_settings.json');
 const COUNTER_FILE = join(DATA_DIR, 'counter.json');
 
-/* ─── 单调递增消息 ID 计数器 ───
-   避免"全表 max+1"在最高 id 被物理删除后回退，导致客户端 after 水位高挂、新消息永不投递 */
-let idCounter = { messages: 0, groupMessages: 0 };
+/* ─── 单调递增 ID 计数器 ───
+   避免"全表 max+1"在最高 id 被物理删除后回退：消息会永不投递，商品/订单会因 id 复用出现幽灵"已购买"记录 */
+const ID_KEYS = ['messages', 'groupMessages', 'items', 'orders', 'redpackets', 'transfers', 'ratings', 'categories', 'users', 'groups'];
+let idCounter = Object.fromEntries(ID_KEYS.map(k => [k, 0]));
 try {
-  if (existsSync(COUNTER_FILE)) idCounter = JSON.parse(readFileSync(COUNTER_FILE, 'utf-8')) || idCounter;
-} catch { idCounter = { messages: 0, groupMessages: 0 }; }
+  if (existsSync(COUNTER_FILE)) {
+    const saved = JSON.parse(readFileSync(COUNTER_FILE, 'utf-8')) || {};
+    for (const k of ID_KEYS) if (typeof saved[k] === 'number') idCounter[k] = saved[k];
+  }
+} catch { idCounter = Object.fromEntries(ID_KEYS.map(k => [k, 0])); }
 
 function saveCounter() {
   writeFileSync(COUNTER_FILE, JSON.stringify(idCounter), 'utf-8');
@@ -45,27 +49,44 @@ function saveCounter() {
 
 function initCounter() {
   try {
-    const maxM = readJSON(MESSAGES_FILE).reduce((m, x) => Math.max(m, x.id || 0), 0);
-    const maxG = readJSON(GROUP_MESSAGES_FILE).reduce((m, x) => Math.max(m, x.id || 0), 0);
-    idCounter.messages = Math.max(idCounter.messages || 0, maxM);
-    idCounter.groupMessages = Math.max(idCounter.groupMessages || 0, maxG);
+    const seeds = {
+      messages: MESSAGES_FILE,
+      groupMessages: GROUP_MESSAGES_FILE,
+      items: ITEMS_FILE,
+      orders: ORDERS_FILE,
+      redpackets: REDPACKETS_FILE,
+      transfers: TRANSFERS_FILE,
+      ratings: RATINGS_FILE,
+      categories: CATEGORIES_FILE,
+      users: USERS_FILE,
+      groups: GROUPS_FILE,
+    };
+    for (const [key, file] of Object.entries(seeds)) {
+      const maxId = readJSON(file).reduce((m, x) => Math.max(m, x.id || 0), 0);
+      idCounter[key] = Math.max(idCounter[key] || 0, maxId);
+    }
+    // 商品 id 还要避开历史订单/评价/购物车引用的 itemId，否则新商品会与旧订单"撞号"
+    const refMax = [
+      ...readJSON(ORDERS_FILE).map(o => o.itemId || 0),
+      ...readJSON(RATINGS_FILE).map(r => r.itemId || 0),
+      ...readJSON(CART_FILE).map(c => c.itemId || 0),
+    ].reduce((m, x) => Math.max(m, x), 0);
+    idCounter.items = Math.max(idCounter.items || 0, refMax);
     saveCounter();
   } catch (err) {
     console.error(`[counter] 初始化失败: ${err.message}`);
   }
 }
 
-function nextMessageId() {
-  idCounter.messages = (idCounter.messages || 0) + 1;
+// 通用单调 ID 分配
+function allocId(key) {
+  idCounter[key] = (idCounter[key] || 0) + 1;
   saveCounter();
-  return idCounter.messages;
+  return idCounter[key];
 }
 
-function nextGroupMessageId() {
-  idCounter.groupMessages = (idCounter.groupMessages || 0) + 1;
-  saveCounter();
-  return idCounter.groupMessages;
-}
+function nextMessageId() { return allocId('messages'); }
+function nextGroupMessageId() { return allocId('groupMessages'); }
 
 // ─── 文件上传（base64 JSON 方式，无额外依赖）───
 const UPLOADS_DIR = join(DATA_DIR, 'uploads');
@@ -127,7 +148,7 @@ function attachRedpacketStatus(messages, userId) {
 }
 
 let users = readJSON(USERS_FILE);
-let nextUserId = users.length > 0 ? Math.max(...users.map(u => u.id)) + 1 : 1;
+// 用户 id 由单调计数器分配（见 nextId）
 
 /* ═══════════════════════════════════════
    密码哈希（scrypt，兼容旧明文自动迁移）
@@ -311,7 +332,7 @@ app.post('/api/register', (req, res) => {
   // 首个注册用户自动成为管理员（避免无种子管理员）
   const isFirstUser = users.length === 0;
   const newUser = {
-    id: nextUserId++,
+    id: allocId('users'),
     username: username.trim(),
     password: hashPassword(password),
     nickname: username.trim(),
@@ -1048,6 +1069,8 @@ app.get('/api/market', (req, res) => {
       title: i.title,
       description: i.description.substring(0, 100),
       price: i.price,
+      stock: i.stock === undefined ? null : i.stock,
+      soldCount: i.soldCount || 0,
       bought: boughtItemIds.has(i.id),
       categoryId: i.categoryId,
       categoryName: category ? category.name : null,
@@ -1114,16 +1137,18 @@ app.get('/api/market/:itemId', (req, res) => {
       title: item.title,
       description: item.description,
       price: item.price,
+      stock: item.stock === undefined ? null : item.stock,
+      soldCount: item.soldCount || 0,
       status: item.status,
       createdAt: item.createdAt,
     },
   });
 });
 
-// 上架商品
+// 上架商品（可选库存数量：不填 = 无限量）
 app.post('/api/market/publish', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
-  const { title, description, price, postBuyMessage, categoryId } = req.body;
+  const { title, description, price, postBuyMessage, categoryId, stock } = req.body;
 
   if (!userId) return res.json({ ok: false, msg: '未登录' });
   if (!title || !title.trim()) return res.json({ ok: false, msg: '请输入标题' });
@@ -1131,8 +1156,18 @@ app.post('/api/market/publish', (req, res) => {
   const numPrice = Number(price);
   if (!Number.isInteger(numPrice) || numPrice <= 0) return res.json({ ok: false, msg: '价格必须为大于0的整数' });
 
+  // 库存：留空表示无限量；填了必须是正整数
+  let stockVal = null;
+  if (stock !== undefined && stock !== null && String(stock).trim() !== '') {
+    const n = Number(stock);
+    if (!Number.isInteger(n) || n <= 0) {
+      return res.json({ ok: false, msg: '库存数量必须是大于0的整数（不填为无限量）' });
+    }
+    stockVal = n;
+  }
+
   let items = readJSON(ITEMS_FILE);
-  const nextId = items.length > 0 ? Math.max(...items.map(i => i.id)) + 1 : 1;
+  const nextId = allocId('items');
 
   const item = {
     id: nextId,
@@ -1140,6 +1175,8 @@ app.post('/api/market/publish', (req, res) => {
     title: title.trim(),
     description: description.trim(),
     price: numPrice,
+    stock: stockVal,
+    soldCount: 0,
     postBuyMessage: (postBuyMessage || '').trim(),
     categoryId: categoryId || null,
     status: 'active',
@@ -1174,11 +1211,22 @@ app.post('/api/market/buy', (req, res) => {
   const alreadyBought = orders.some(o => o.buyerId === userId && o.itemId === itemId);
   if (alreadyBought) return res.json({ ok: false, msg: '你已经购买过该商品了' });
 
+  // 库存检查（null/undefined = 无限量）
+  if (item.stock !== undefined && item.stock !== null && item.stock <= 0) {
+    return res.json({ ok: false, msg: '该商品已售罄' });
+  }
+
   const price = item.price;
   if ((buyer.credits || 0) < price) return res.json({ ok: false, msg: '积分不足' });
 
   // 扣买家积分
   buyer.credits = (buyer.credits || 0) - price;
+
+  // 扣库存
+  if (item.stock !== undefined && item.stock !== null) {
+    item.stock -= 1;
+    item.soldCount = (item.soldCount || 0) + 1;
+  }
 
   // 加卖家积分（扣除 20% 税，卖家实际获得 80%）
   const seller = users.find(u => u.id === item.sellerId);
@@ -1192,7 +1240,7 @@ app.post('/api/market/buy', (req, res) => {
   writeJSON(ITEMS_FILE, items);
 
   // 创建订单
-  const nextOrderId = orders.length > 0 ? Math.max(...orders.map(o => o.id)) + 1 : 1;
+  const nextOrderId = allocId('orders');
   orders.push({
     id: nextOrderId,
     buyerId: userId,
@@ -1274,6 +1322,10 @@ app.post('/api/cart/add', (req, res) => {
   if (!item) return res.json({ ok: false, msg: '商品不存在' });
   if (item.status !== 'active') return res.json({ ok: false, msg: '商品已下架' });
   if (item.sellerId === userId) return res.json({ ok: false, msg: '不能加自己的商品' });
+  // 库存为 0 → 已售罄
+  if (item.stock !== undefined && item.stock !== null && item.stock <= 0) {
+    return res.json({ ok: false, msg: '该商品已售罄' });
+  }
 
   // 检查是否已购买过
   let orders = readJSON(ORDERS_FILE);
@@ -1325,9 +1377,13 @@ app.post('/api/cart/checkout', (req, res) => {
 
   if (validItems.length === 0) return res.json({ ok: false, msg: '购物车为空或商品已失效' });
 
-  // 已购买过的商品不参与本次结算（此前会被计入 totalPrice 导致误拒）
+  // 已购买过 / 已售罄的商品不参与本次结算
   const alreadyBoughtItems = validItems.filter(item => orders.some(o => o.buyerId === userId && o.itemId === item.id));
-  const pendingItems = validItems.filter(item => !alreadyBoughtItems.includes(item));
+  const soldOutItems = validItems.filter(item =>
+    !alreadyBoughtItems.includes(item) &&
+    item.stock !== undefined && item.stock !== null && item.stock <= 0
+  );
+  const pendingItems = validItems.filter(item => !alreadyBoughtItems.includes(item) && !soldOutItems.includes(item));
 
   // 计算总价（只算真正要买的）
   const totalPrice = pendingItems.reduce((sum, item) => sum + item.price, 0);
@@ -1344,10 +1400,19 @@ app.post('/api/cart/checkout', (req, res) => {
   for (const item of alreadyBoughtItems) {
     results.push({ itemId: item.id, title: item.title, status: 'skipped', reason: '已购买过' });
   }
+  for (const item of soldOutItems) {
+    results.push({ itemId: item.id, title: item.title, status: 'skipped', reason: '已售罄' });
+  }
 
   for (const item of pendingItems) {
     // 扣买家积分
     buyer.credits = (buyer.credits || 0) - item.price;
+
+    // 扣库存（null/undefined = 无限量）
+    if (item.stock !== undefined && item.stock !== null) {
+      item.stock -= 1;
+      item.soldCount = (item.soldCount || 0) + 1;
+    }
 
     // 加卖家积分（80%）
     const seller = users.find(u => u.id === item.sellerId);
@@ -1358,7 +1423,7 @@ app.post('/api/cart/checkout', (req, res) => {
     if (seller) seller.credits = (seller.credits || 0) + sellerEarning;
 
     // 创建订单
-    const nextOrderId = orders.length > 0 ? Math.max(...orders.map(o => o.id)) + 1 : 1;
+    const nextOrderId = allocId('orders');
     orders.push({
       id: nextOrderId,
       buyerId: userId,
@@ -1486,7 +1551,7 @@ app.post('/api/categories', (req, res) => {
   if (!name || !name.trim()) return res.json({ ok: false, msg: '分类名称不能为空' });
 
   let categories = readJSON(CATEGORIES_FILE);
-  const nextId = categories.length > 0 ? Math.max(...categories.map(c => c.id)) + 1 : 1;
+  const nextId = allocId('categories');
 
   const category = { id: nextId, name: name.trim(), icon: icon || '📦', color: color || '#1890ff' };
   categories.push(category);
@@ -1553,7 +1618,7 @@ app.post('/api/ratings', (req, res) => {
     return res.json({ ok: true, msg: '评价已更新', rating: existing });
   }
 
-  const nextId = ratings.length > 0 ? Math.max(...ratings.map(r => r.id)) + 1 : 1;
+  const nextId = allocId('ratings');
   const newRating = {
     id: nextId,
     userId,
@@ -1613,7 +1678,7 @@ app.post('/api/transfer', (req, res) => {
 
   let transfers = readJSON(TRANSFERS_FILE);
   const transferIds = Array.isArray(transfers) ? transfers.map(t => t.id).filter(id => typeof id === 'number') : [];
-  const nextId = transferIds.length > 0 ? Math.max(...transferIds) + 1 : 1;
+  const nextId = allocId('transfers');
   const transfer = {
     id: nextId,
     senderId: userId,
@@ -1701,7 +1766,7 @@ app.post('/api/redpackets/send', (req, res) => {
   writeJSON(USERS_FILE, users);
 
   let redpackets = readJSON(REDPACKETS_FILE);
-  const nextId = redpackets.length > 0 ? Math.max(...redpackets.map(r => r.id)) + 1 : 1;
+  const nextId = allocId('redpackets');
   
   const perAmount = Math.floor(numAmount / finalCount);
   const remainder = numAmount - perAmount * finalCount; // 整除余数，由最后一个领取者带走
@@ -1880,7 +1945,7 @@ app.post('/api/groups/create', (req, res) => {
 
   // 创建群聊
   let groups = readJSON(GROUPS_FILE);
-  const nextGroupId = groups.length > 0 ? Math.max(...groups.map(g => g.id)) + 1 : 1;
+  const nextGroupId = allocId('groups');
   
   const group = {
     id: nextGroupId,

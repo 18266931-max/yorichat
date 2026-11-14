@@ -1134,7 +1134,7 @@ export default function App() {
   const [buyItem, setBuyItem] = useState<any>(null);
   const [postBuyModalMsg, setPostBuyModalMsg] = useState('');
   const [showPostBuyModal, setShowPostBuyModal] = useState(false);
-  const [publishForm, setPublishForm] = useState({ title: '', description: '', price: '', postBuyMessage: '', categoryId: null as number | null });
+  const [publishForm, setPublishForm] = useState({ title: '', description: '', price: '', stock: '', postBuyMessage: '', categoryId: null as number | null });
   const [allPostBuyMessages, setAllPostBuyMessages] = useState<{title: string, message: string}[]>([]);
   const [postBuyMsgIndex, setPostBuyMsgIndex] = useState(0);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -1370,15 +1370,23 @@ export default function App() {
   };
 
   const handlePublish = async () => {
-    const { title, description, price, postBuyMessage, categoryId } = publishForm;
+    const { title, description, price, stock, postBuyMessage, categoryId } = publishForm;
     if (!title.trim()) { adminToastFn('请输入标题'); return; }
     if (!description.trim()) { adminToastFn('请输入描述'); return; }
     if (!price || Number(price) <= 0) { adminToastFn('价格必须大于0'); return; }
+    if (stock !== '' && (!Number.isInteger(Number(stock)) || Number(stock) <= 0)) {
+      adminToastFn('库存数量必须是大于0的整数（不填为无限量）');
+      return;
+    }
 
-    const res = await apiPost('/market/publish', { title, description, price: Number(price), postBuyMessage: postBuyMessage.trim(), categoryId }, currentUser!.id);
+    const res = await apiPost('/market/publish', {
+      title, description, price: Number(price),
+      stock: stock === '' ? null : Number(stock),
+      postBuyMessage: postBuyMessage.trim(), categoryId,
+    }, currentUser!.id);
     if (res.ok) {
       setShowPublishModal(false);
-      setPublishForm({ title: '', description: '', price: '', postBuyMessage: '', categoryId: null });
+      setPublishForm({ title: '', description: '', price: '', stock: '', postBuyMessage: '', categoryId: null });
       adminToastFn('上架成功');
       loadMarketItems();
       loadMyItems();
@@ -3135,6 +3143,13 @@ export default function App() {
                         </span>
                         <span className="market-item-price"><Coins size={12} /> {item.price}</span>
                       </div>
+                      <div className="market-item-stock">
+                        {item.stock === 0
+                          ? <span className="stock-badge stock-out">已售罄</span>
+                          : item.stock != null
+                            ? <span className="stock-badge">库存 {item.stock} 件 · 已售 {item.soldCount || 0}</span>
+                            : <span className="stock-badge stock-unlimited">无限量</span>}
+                      </div>
                       {item.sellerId !== currentUser?.id && item.bought && (
                         <div className="market-item-status bought-tag">
                           <Heart size={12} /> 已购买
@@ -3152,12 +3167,14 @@ export default function App() {
                           <button
                             className="market-buy-btn direct-buy-btn"
                             onClick={() => handleDirectBuy(item)}
+                            disabled={item.stock === 0}
                           >
-                            直接购买
+                            {item.stock === 0 ? '已售罄' : '直接购买'}
                           </button>
                           <button
                             className="market-buy-btn cart-btn"
                             onClick={() => handleAddToCart(item)}
+                            disabled={item.stock === 0}
                           >
                             <ShoppingCart size={14} /> 加入购物车
                           </button>
@@ -3196,6 +3213,13 @@ export default function App() {
                         销量：{item.sales || 0} · {new Date(item.createdAt).toLocaleString('zh-CN')}
                       </span>
                       <span className="market-item-price"><Coins size={12} /> {item.price}</span>
+                    </div>
+                    <div className="market-item-stock">
+                      {item.stock === 0
+                        ? <span className="stock-badge stock-out">已售罄</span>
+                        : item.stock != null
+                          ? <span className="stock-badge">剩余库存 {item.stock} 件</span>
+                          : <span className="stock-badge stock-unlimited">无限量</span>}
                     </div>
                     {item.status === 'active' && (
                       <div className="market-item-actions" style={{marginTop:'8px'}}>
@@ -3329,9 +3353,18 @@ export default function App() {
                       value={publishForm.price}
                       onChange={e => setPublishForm(f => ({...f, price: e.target.value}))}
                     />
+                    <label className="market-label">数量（库存，可选）</label>
+                    <input
+                      className="market-input"
+                      type="number"
+                      min="1"
+                      placeholder="留空 = 无限量；填了就卖完为止"
+                      value={publishForm.stock}
+                      onChange={e => setPublishForm(f => ({...f, stock: e.target.value}))}
+                    />
                     <div className="publish-tax-hint">
                       <Coins size={14} style={{color:'#faad14',flexShrink:0}} />
-                      <span>上架须知：买家付款后，您将获得售价的 <strong>80%</strong>（平台收取 20% 税费）。例如标价 100 积分，您实际获得 80 积分。</span>
+                      <span>上架须知：买家付款后，您将获得售价的 <strong>80%</strong>（平台收取 20% 税费）。例如标价 100 积分，您实际获得 80 积分。数量留空则不限购买次数。</span>
                     </div>
                     <label className="market-label" style={{marginTop:'8px',fontSize:'12px',color:'#8c8c8c'}}>购买后提示（可选，买家付款后弹窗显示）</label>
                     <textarea
