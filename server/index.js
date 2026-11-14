@@ -419,11 +419,11 @@ app.delete('/api/friends/:friendId', (req, res) => {
 function attachReplyPreview(messages, sourceMessages) {
   const withReply = messages.some(m => m.replyToId);
   if (!withReply) return messages;
-  const all = sourceMessages;
+  const byId = new Map(sourceMessages.map(m => [m.id, m]));
   users = readJSON(USERS_FILE);
   return messages.map(m => {
     if (!m.replyToId) return m;
-    const replied = all.find(x => x.id === m.replyToId);
+    const replied = byId.get(m.replyToId);
     if (!replied) return { ...m, replyTo: null };
     const sender = users.find(u => u.id === replied.senderId);
     return {
@@ -573,6 +573,7 @@ app.delete('/api/messages/:messageId', (req, res) => {
   let messages = readJSON(MESSAGES_FILE);
   const msg = messages.find(m => m.id === messageId);
   if (!msg) return res.json({ ok: false, msg: '消息不存在' });
+  if (msg.deleted) return res.json({ ok: false, msg: '消息已删除' });
   if (msg.senderId !== userId && msg.receiverId !== userId) {
     return res.json({ ok: false, msg: '无权删除该消息' });
   }
@@ -601,8 +602,11 @@ app.post('/api/messages/:messageId/recall', (req, res) => {
   if (!msg) return res.json({ ok: false, msg: '消息不存在' });
   if (msg.senderId !== userId) return res.json({ ok: false, msg: '只能撤回自己的消息' });
   if (msg.type === 'redpacket' || msg.redpacketId) return res.json({ ok: false, msg: '红包消息不能撤回' });
+  if (msg.deleted) return res.json({ ok: false, msg: '消息已删除' });
   if (msg.recalled) return res.json({ ok: false, msg: '消息已撤回' });
-  if (Date.now() - msg.timestamp > 5 * 60 * 1000) return res.json({ ok: false, msg: '超过5分钟，无法撤回' });
+  if (!Number.isFinite(msg.timestamp) || Date.now() - msg.timestamp > 5 * 60 * 1000) {
+    return res.json({ ok: false, msg: '超过5分钟，无法撤回' });
+  }
 
   msg.recalled = true;
   msg.content = '';
@@ -649,18 +653,21 @@ app.get('/api/messages/search', (req, res) => {
   let messages = readJSON(MESSAGES_FILE);
   messages = messages.filter(m =>
     (m.senderId === userId || m.receiverId === userId) &&
-    m.content && m.content.toLowerCase().includes(lower)
+    m.content && typeof m.content === 'string' && m.content.toLowerCase().includes(lower)
   );
   if (peerId) {
     messages = messages.filter(m => m.senderId === peerId || m.receiverId === peerId);
   }
-  messages = messages.slice(-50).reverse(); // 最新的在前
+  // 按时间倒序取最近 50 条（此前按文件顺序，不可靠）
+  messages = messages
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+    .slice(0, 50);
 
   users = readJSON(USERS_FILE);
   const results = messages.map(m => {
     const peer = users.find(u => u.id === (m.senderId === userId ? m.receiverId : m.senderId));
     return {
-      message: m,
+      message: attachReplyPreview([m], readJSON(MESSAGES_FILE))[0],
       peerId: m.senderId === userId ? m.receiverId : m.senderId,
       peerName: peer ? (peer.nickname || peer.username) : '未知',
       mine: m.senderId === userId,
@@ -884,24 +891,37 @@ app.post('/api/admin/users/:targetId/reset-password', (req, res) => {
   const targetId = parseInt(req.params.targetId);
   const { newPassword } = req.body;
   if (!userId || !isAdmin(userId)) return res.json({ ok: false, msg: '无权限' });
-  if (!newPassword || newPassword.length < 6) return res.json({ ok: false, msg: '密码至少6个字符' });
+  if (typeof newPassword !== 'string' || newPassword.length < 6 || newPassword.length > 64) {
+    return res.json({ ok: false, msg: '密码至少6个字符' });
+  }
+  if (targetId === userId) return res.json({ ok: false, msg: '请使用"修改密码"功能修改自己的密码' });
 
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
+  // 不允许管理员重置其他管理员的密码（避免互相越权）
+  if (target.role === 'admin') return res.json({ ok: false, msg: '不能重置其他管理员的密码' });
 
   target.password = hashPassword(newPassword);
   writeJSON(USERS_FILE, users);
   res.json({ ok: true, msg: '已重置密码' });
 });
 
-// 清空所有消息（管理员）
+// 清空所有消息（管理员）：私聊 + 群聊
 app.post('/api/admin/clear-messages', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
   if (!userId || !isAdmin(userId)) return res.json({ ok: false, msg: '无权限' });
 
+  const privateCount = readJSON(MESSAGES_FILE).length;
   writeJSON(MESSAGES_FILE, []);
-  res.json({ ok: true, msg: '已清空所有消息' });
+  let groupCount = 0;
+  try {
+    groupCount = readJSON(GROUP_MESSAGES_FILE).length;
+    writeJSON(GROUP_MESSAGES_FILE, []);
+  } catch (err) {
+    console.error('[clear-messages] 清理群消息失败:', err.message);
+  }
+  res.json({ ok: true, msg: `已清空私聊 ${privateCount} 条、群聊 ${groupCount} 条消息` });
 });
 
 // 获取服务器统计（管理员）
@@ -1387,11 +1407,22 @@ app.put('/api/user/profile', (req, res) => {
   const { nickname, avatar, bio } = req.body;
   if (!userId) return res.json({ ok: false, msg: '未登录' });
 
+  // 类型与长度校验（避免非字符串导致 500、超长内容入库）
+  if (nickname !== undefined && (typeof nickname !== 'string' || nickname.trim().length > 20)) {
+    return res.json({ ok: false, msg: '昵称必须是1-20个字符的文本' });
+  }
+  if (avatar !== undefined && (typeof avatar !== 'string' || avatar.length > 8)) {
+    return res.json({ ok: false, msg: '头像格式无效' });
+  }
+  if (bio !== undefined && (typeof bio !== 'string' || bio.length > 200)) {
+    return res.json({ ok: false, msg: '简介不能超过200字' });
+  }
+
   users = readJSON(USERS_FILE);
   const user = users.find(u => u.id === userId);
   if (!user) return res.json({ ok: false, msg: '用户不存在' });
 
-  if (nickname !== undefined) user.nickname = nickname.trim();
+  if (nickname !== undefined) user.nickname = nickname.trim() || user.username;
   if (avatar !== undefined) user.avatar = avatar;
   if (bio !== undefined) user.bio = bio.trim();
 
@@ -1598,7 +1629,9 @@ app.post('/api/redpackets/send', (req, res) => {
   const { receiverId, groupId, amount, count, note } = req.body;
 
   if (!userId) return res.json({ ok: false, msg: '未登录' });
+  // 单聊红包与群红包互斥，避免两种模式校验互相跳过
   if (!receiverId && !groupId) return res.json({ ok: false, msg: '缺少接收者' });
+  if (receiverId && groupId) return res.json({ ok: false, msg: '不能同时指定好友和群聊' });
   const numAmount = Number(amount);
   if (!Number.isInteger(numAmount) || numAmount <= 0) return res.json({ ok: false, msg: '金额必须为大于0的整数' });
   const rawCount = Number(count);
@@ -1742,8 +1775,14 @@ app.get('/api/redpackets/:id', (req, res) => {
   users = readJSON(USERS_FILE);
   const sender = users.find(u => u.id === redpacket.senderId);
 
-  // 获取领取记录的用户信息
-  const claimsWithUserInfo = Array.isArray(redpacket.claims) ? redpacket.claims.map(c => {
+  // 领取明细只对参与者可见（发送者 / 单聊接收者 / 领取过的人 / 群成员），避免匿名窥探
+  const isParticipant = !!userId && (
+    redpacket.senderId === userId ||
+    redpacket.receiverId === userId ||
+    (Array.isArray(redpacket.claims) && redpacket.claims.some(c => c.userId === userId)) ||
+    (redpacket.groupId ? readJSON(GROUP_MEMBERS_FILE).some(m => m.groupId === redpacket.groupId && m.userId === userId) : false)
+  );
+  const claimsWithUserInfo = isParticipant && Array.isArray(redpacket.claims) ? redpacket.claims.map(c => {
     const user = users.find(u => u.id === c.userId);
     return {
       ...c,
@@ -1751,6 +1790,7 @@ app.get('/api/redpackets/:id', (req, res) => {
       nickname: user ? user.nickname : '未知'
     };
   }) : [];
+  const { claims: _rawClaims, ...redpacketPublic } = redpacket;
 
   // 检查当前用户是否可以领取
   let canClaim = false;
@@ -1782,7 +1822,7 @@ app.get('/api/redpackets/:id', (req, res) => {
   res.json({
     ok: true,
     redpacket: {
-      ...redpacket,
+      ...redpacketPublic,
       senderName: sender ? sender.username : '未知',
       senderNickname: sender ? sender.nickname : '未知',
       claims: claimsWithUserInfo,
@@ -1800,7 +1840,8 @@ app.post('/api/groups/create', (req, res) => {
   const { name, memberIds } = req.body;
 
   if (!userId) return res.json({ ok: false, msg: '未登录' });
-  if (!name || !name.trim()) return res.json({ ok: false, msg: '群聊名称不能为空' });
+  if (typeof name !== 'string' || !name.trim()) return res.json({ ok: false, msg: '群聊名称不能为空' });
+  if (name.trim().length > 30) return res.json({ ok: false, msg: '群聊名称不能超过30个字符' });
   if (!Array.isArray(memberIds) || memberIds.length === 0) return res.json({ ok: false, msg: '至少需要添加一个成员' });
 
   // 验证成员是否存在
@@ -1951,7 +1992,8 @@ app.put('/api/groups/:groupId', (req, res) => {
 
   if (!userId) return res.json({ ok: false, msg: '未登录' });
   if (!groupId) return res.json({ ok: false, msg: '缺少群聊ID' });
-  if (!name || !name.trim()) return res.json({ ok: false, msg: '群聊名称不能为空' });
+  if (typeof name !== 'string' || !name.trim()) return res.json({ ok: false, msg: '群聊名称不能为空' });
+  if (name.trim().length > 30) return res.json({ ok: false, msg: '群聊名称不能超过30个字符' });
 
   // 检查用户是否是群主
   let groupMembers = readJSON(GROUP_MEMBERS_FILE);
@@ -2087,6 +2129,7 @@ app.delete('/api/groups/:groupId/messages/:messageId', (req, res) => {
   let groupMessages = readJSON(GROUP_MESSAGES_FILE);
   const msg = groupMessages.find(m => m.id === messageId && m.groupId === groupId);
   if (!msg) return res.json({ ok: false, msg: '消息不存在' });
+  if (msg.deleted) return res.json({ ok: false, msg: '消息已删除' });
 
   const groupMembers = readJSON(GROUP_MEMBERS_FILE);
   const membership = groupMembers.find(m => m.groupId === groupId && m.userId === userId);
@@ -2118,10 +2161,14 @@ app.post('/api/groups/:groupId/messages/:messageId/recall', (req, res) => {
   let groupMessages = readJSON(GROUP_MESSAGES_FILE);
   const msg = groupMessages.find(m => m.id === messageId && m.groupId === groupId);
   if (!msg) return res.json({ ok: false, msg: '消息不存在' });
+  if (msg.deleted) return res.json({ ok: false, msg: '消息已删除' });
   if (msg.senderId !== userId) return res.json({ ok: false, msg: '只能撤回自己的消息' });
   if (msg.type === 'redpacket' || msg.redpacketId) return res.json({ ok: false, msg: '红包消息不能撤回' });
+  if (msg.deleted) return res.json({ ok: false, msg: '消息已删除' });
   if (msg.recalled) return res.json({ ok: false, msg: '消息已撤回' });
-  if (Date.now() - msg.timestamp > 5 * 60 * 1000) return res.json({ ok: false, msg: '超过5分钟，无法撤回' });
+  if (!Number.isFinite(msg.timestamp) || Date.now() - msg.timestamp > 5 * 60 * 1000) {
+    return res.json({ ok: false, msg: '超过5分钟，无法撤回' });
+  }
 
   msg.recalled = true;
   msg.content = '';

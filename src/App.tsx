@@ -456,12 +456,25 @@ function ChatView({ conversation, currentUser, onSend, isBlockedByPeer, isPeerBl
     return () => clearInterval(t);
   }, []);
   const endRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
   const recognitionRef = useRef<any>(null);
   const voiceBaseTextRef = useRef<string>('');
   const textRef = useRef(text);
   textRef.current = text;
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [conversation.messages.length]);
+  // 记录是否贴近底部：翻历史时不打扰，贴近底部才自动滚到最新
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const onScroll = () => { nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; };
+    el.addEventListener('scroll', onScroll);
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (nearBottomRef.current) endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [conversation.messages.length]);
 
   // 进入会话 / 收到新消息时上报已读
   useEffect(() => {
@@ -544,7 +557,7 @@ function ChatView({ conversation, currentUser, onSend, isBlockedByPeer, isPeerBl
           </button>
         </div>
       </div>
-      <div className="chat-messages">
+      <div className="chat-messages" ref={listRef}>
         {isPeerBlocked && (
           <div className="block-notice">你已拉黑对方</div>
         )}
@@ -743,12 +756,25 @@ function GroupChatView({ groupId, currentUser, groupMessages, onSend, onAddMembe
     return () => clearInterval(t);
   }, []);
   const endRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const nearBottomRef = useRef(true);
   const recognitionRef = useRef<any>(null);
   const voiceBaseTextRef = useRef<string>('');
   const textRef = useRef(text);
   textRef.current = text;
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [groupMessages.length]);
+  // 翻历史时不强行拉回底部，贴近底部才自动滚动
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const onScroll = () => { nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120; };
+    el.addEventListener('scroll', onScroll);
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  useEffect(() => {
+    if (nearBottomRef.current) endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [groupMessages.length]);
 
   // 初始化语音识别
   useEffect(() => {
@@ -819,7 +845,7 @@ function GroupChatView({ groupId, currentUser, groupMessages, onSend, onAddMembe
           </button>
         </div>
       </div>
-      <div className="chat-messages">
+      <div className="chat-messages" ref={listRef}>
         {groupMessages.map(msg => {
           const isSelf = msg.senderId === currentUser.id;
           const msgAge = now - msg.timestamp;
@@ -1106,6 +1132,7 @@ export default function App() {
   const pollingRef = useRef(false);
   // 搜索请求序号：防止快速输入时旧响应覆盖新结果
   const searchSeqRef = useRef(0);
+  const searchTimerRef = useRef<number | null>(null);
   // 变更同步基准：上一轮服务端返回的 serverTime（用服务器时钟，避免客户端时钟偏差丢变更）
   const lastServerTimeRef = useRef(0);
 
@@ -2331,15 +2358,19 @@ export default function App() {
   };
 
   // 消息搜索（输入即时查询，展示匹配会话 + 匹配消息）
-  const handleChatSearch = async (q: string) => {
+  const handleChatSearch = (q: string) => {
     setSearchQuery(q);
     const seq = ++searchSeqRef.current;
+    if (searchTimerRef.current) { clearTimeout(searchTimerRef.current); searchTimerRef.current = null; }
     if (!q.trim() || !currentUser) { setMsgSearchResults([]); return; }
-    try {
-      const res = await apiGet(`/messages/search?q=${encodeURIComponent(q.trim())}`, currentUser.id);
-      // 只接受最新一次请求的结果
-      if (seq === searchSeqRef.current && res.ok) setMsgSearchResults(res.results || []);
-    } catch {}
+    // 防抖 200ms：避免每次按键都发请求
+    searchTimerRef.current = window.setTimeout(async () => {
+      try {
+        const res = await apiGet(`/messages/search?q=${encodeURIComponent(q.trim())}`, currentUser.id);
+        // 只接受最新一次请求的结果
+        if (seq === searchSeqRef.current && res.ok) setMsgSearchResults(res.results || []);
+      } catch {}
+    }, 200);
   };
 
   // 加载会话设置（置顶 / 免打扰）
