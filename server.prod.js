@@ -29,6 +29,6 @@ const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process
 if (isDirectRun) {
   const PORT = parseInt(process.env.PORT, 10) || 3001;
   app.listen(PORT, () => {
-    console.log(`Tang People Chat running at http://localhost:${PORT}`);
+    console.log(`YoriChat running at http://localhost:${PORT}`);
   });
 }

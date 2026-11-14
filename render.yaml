@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: tang-chat
+    name: yorichat
     env: node
     plan: free
     buildCommand: npm run build

@@ -1144,7 +1144,7 @@ app.get('/api/admin/backup', (req, res) => {
   }
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="tangchat-backup-${stamp}.json"`);
+  res.setHeader('Content-Disposition', `attachment; filename="yorichat-backup-${stamp}.json"`);
   res.send(JSON.stringify({ exportedAt: new Date().toISOString(), data }, null, 2));
 });
 
@@ -2648,7 +2648,7 @@ app.delete('/api/groups/:groupId/members', (req, res) => {
 
 // ─── Health ───
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, service: 'tang-chat-api', uptime: Math.round(process.uptime()), time: Date.now() });
+  res.json({ ok: true, service: 'yorichat-api', uptime: Math.round(process.uptime()), time: Date.now() });
 });
 
 // 当前前端构建版本（用于页面自动更新检测）

@@ -1,4 +1,4 @@
-# Tang People Chat 部署指南
+# YoriChat 部署指南
 
 ## 项目概述
 
@@ -28,9 +28,9 @@ npm start          # 启动服务器（托管前端 + API）
 
 ```bash
 npm install -g pm2
-pm2 start server.prod.js --name tang-chat
+pm2 start server.prod.js --name yorichat
 pm2 status        # 查看状态
-pm2 stop tang-chat
+pm2 stop yorichat
 ```
 
 ### 使用 Docker
@@ -53,8 +53,8 @@ CMD ["npm", "start"]
 ```
 
 ```bash
-docker build -t tang-chat .
-docker run -p 3001:3001 -d tang-chat
+docker build -t yorichat .
+docker run -p 3001:3001 -d yorichat
 ```
 
 ### 部署到 Vercel

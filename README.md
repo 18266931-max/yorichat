@@ -1,52 +1,98 @@
-# Tang People Chat
+# YoriChat
 
-一款基于 React 19 + Vite + Express 5 的聊天应用：好友、私聊/群聊、红包、积分转账、商品市场、购物车、评价、管理后台、多主题。
+> 你的聊天圈子 · chat, trade, together.
 
-## ✨ 功能
+一款轻量的全栈聊天应用：私聊、群聊、红包、积分转账、二手集市，一个应用搞定。
+前端 React 19 + TypeScript + Vite，后端 Node.js + Express 5，零数据库依赖（JSON 文件存储）。
 
-- 注册登录（scrypt 密码哈希 + Bearer token 鉴权，首个注册用户自动成为管理员）
-- 好友 / 私聊（引用回复、撤回、已读回执、单条删除、消息搜索、图片/文件发送、置顶/免打扰）
-- 群聊（@提及、引用、撤回、成员管理）
-- 红包 / 转账 / 市场 / 评价 / 管理后台
-- 8 套主题（设置页一键切换）
+## ✨ 功能特性
 
-## 🚀 一键部署
+**聊天**
+- 私聊 / 群聊，2 秒轮询增量拉取（只拉新消息与变更，省流量）
+- 消息引用回复、5 分钟内撤回、单条删除（双端墓碑同步）
+- 已读回执、消息搜索、@提及
+- 图片 / 文件上传（8MB）与下载（保留原文件名，中文不乱码）
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/18266931-max/tang-chat)
+**社交**
+- 好友添加 / 搜索 / 删除 / 拉黑
+- 头像（emoji 或上传图片）、昵称、简介
+- 全站公告（管理员发布，全员顶部可见）
 
-> 或手动：render.com → Sign in with GitHub → New Web Service → Connect 本仓库（`render.yaml` 已配好，自动构建）。
-> 注：Glitch 已于 2025-07-08 停止托管，故不再提供其入口。
+**经济**
+- 红包（单聊 / 群聊，自动处理整除余数，禁止自抢）
+- 积分转账
+- 集市：上架商品、库存数量（不填=无限量）、购物车、订单、评价（卖家得 80%，平台抽成 20%）
 
-## 🖥️ 本地运行
+**管理**
+- 三级角色：超级管理员 > 普通管理员 > 用户
+- 普通管理员：用户禁用/启用、重置密码、调积分、任免普通管理员
+- 超级管理员：任免超级管理员、群聊管理（解散群）、系统设置（公告/注册开关）、消息审查、彻底删除用户、市场数据重置、数据备份导出/恢复
+
+**体验**
+- 8 套主题配色，支持深浅色
+- 移动端适配
+- 新版本自动检测刷新
+
+## 🚀 快速开始
 
 ```bash
+# 1. 安装依赖
 npm install
+
+# 2. 构建前端（生成 dist/）
 npm run build
-npm start        # http://localhost:3001
+
+# 3. 启动服务（托管前端 + API）
+npm start
 ```
 
-开发模式：`npm run dev`（Vite 5173）+ `npm run dev:server`（API 3001）。
+访问 http://localhost:3001
+
+首次启动后注册的第一个账号自动成为**超级管理员**。
+
+### 开发模式
+
+```bash
+# 终端 1：后端 API（3001）
+npm run dev:server
+
+# 终端 2：Vite 开发服务器（5173，/api 自动代理到 3001）
+npm run dev
+```
+
+## 🔧 技术栈
+
+- **前端**: React 19 + TypeScript + Vite（状态驱动视图，无路由依赖）
+- **后端**: Node.js + Express 5（单文件 API，JSON 文件存储）
+- **鉴权**: Bearer token（HMAC-SHA256 签名，密钥持久化在 `server/.secret`）
+- **密码**: scrypt 加盐哈希
+- **安全**: 全接口鉴权、管理员分级、上传白名单、原子写、单调 ID 计数器
 
 ## 🗄️ 数据存储
 
-默认存 `server/*.json`（14 个文件 + uploads/），可用环境变量 `DATA_DIR` 指定目录。**这些文件已被 .gitignore 排除，不会进入仓库**——首次部署时数据目录为空，第一个注册的用户自动成为管理员。
+数据保存在 `server/*.json`（用户 / 好友 / 消息 / 拉黑 / 商品 / 订单 / 购物车 / 评价 / 转账 / 分类 / 红包 / 群聊 / 系统设置 等），可用环境变量 `DATA_DIR` 指定其他目录。
 
-## ⚙️ 环境变量
+> 生产环境建议换用数据库；免费 PaaS 的临时磁盘重启会丢数据，请用持久磁盘或自建服务器。
 
-| 变量 | 说明 | 默认 |
-|---|---|---|
-| PORT | 服务端口 | 3001 |
-| DATA_DIR | 数据文件目录 | app/server |
+## 📄 环境变量
 
-## 🔒 安全
+| 变量名 | 说明 | 默认值 |
+|--------|------|--------|
+| `PORT` | 服务端口 | 3001 |
+| `DATA_DIR` | 数据文件目录 | `server/` |
 
-- 密码 scrypt 加盐哈希，旧明文账号首次登录自动迁移
-- HMAC 签名 token（密钥持久化于 `server/.secret`，不入库）
-- 全局鉴权中间件：伪造 / 冒充 / 禁用账号一律拒绝
-- 文件上传有大小与扩展名白名单、文件名净化
+## 🩺 健康检查
 
-## 📄 文档
+```
+GET /api/health
+```
 
-- `docs/login-plan.md` — 原始设计
-- `DEPLOYMENT.md` — 部署指南
-- `scripts/` — API 冒烟测试（`node scripts/smoke-*.mjs`）
+## 🌐 部署
+
+- **Render / Railway / Fly.io**（容器或 Node 环境 + 持久磁盘）
+- **VPS**：`pm2 start server.prod.js --name yorichat`
+- 详见 [DEPLOYMENT.md](DEPLOYMENT.md)
+
+## 📄 License
+
+MIT

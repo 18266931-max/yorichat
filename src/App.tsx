@@ -386,8 +386,8 @@ function LoginPage({ onLogin, onGoRegister }: { onLogin: (u: ChatUser) => void; 
       <div className="auth-card">
         <div className="auth-logo">
             <Logo />
-            <h1>塔菲们的聊天</h1>
-            <p>糖糖们的聊天室</p>
+            <h1>YoriChat</h1>
+            <p>聊天 · 群聊 · 集市</p>
           </div>
         <form onSubmit={handleSubmit}>
           <div className="auth-field">
@@ -441,8 +441,8 @@ function RegisterPage({ onLogin, onGoLogin }: { onLogin: (u: ChatUser) => void; 
       <div className="auth-card">
         <div className="auth-logo">
           <Logo />
-          <h1>塔菲们的聊天</h1>
-          <p>加入糖糖们的聊天室</p>
+          <h1>YoriChat</h1>
+          <p>加入你的聊天圈子</p>
         </div>
         <form onSubmit={handleSubmit}>
           <div className="auth-field">
@@ -1396,7 +1396,7 @@ export default function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `tangchat-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `yorichat-backup-${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -3875,8 +3875,8 @@ export default function App() {
         ) : (
           <div className="empty-state">
             <div className="empty-icon"><MessageCircle size={32} /></div>
-            <div className="empty-title">Tang people chat</div>
-            <div className="empty-sub">选择一个聊天开始吧</div>
+            <div className="empty-title">YoriChat</div>
+            <div className="empty-sub">你的聊天圈子 · 选择一个会话开始吧</div>
           </div>
         )}
       </div>
