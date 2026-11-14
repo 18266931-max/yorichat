@@ -41,15 +41,19 @@ const created = await req('POST', '/api/groups/create', { token: ord.token, body
 const gid = created.data?.group?.id;
 check('创建测试群', created.data?.ok === true && !!gid);
 r = await req('GET', '/api/admin/groups', { token: ord.token });
-check('普通管理员可看群聊管理', r.data?.ok === true && Array.isArray(r.data.groups));
+check('普通管理员不能看群聊管理', r.data?.ok === false && r.data.msg.includes('超级管理员'), r.data?.msg);
+r = await req('GET', `/api/admin/groups?userId=${sup.id}`, { token: sup.token });
+check('超级管理员可看群聊管理', r.data?.ok === true && Array.isArray(r.data.groups));
 check('群列表含新群', (r.data.groups || []).some(g => g.id === gid));
 const target = (r.data.groups || []).find(g => g.id === gid);
 check('群信息含成员数', target && target.memberCount >= 2, JSON.stringify(target));
-r = await req('POST', `/api/admin/groups/${gid}/dissolve`, { token: ord.token, body: {} });
+r = await req('POST', `/api/admin/groups/${gid}/dissolve`, { token: sup.token, body: {} });
 check('不带群名确认不能解散', r.data?.ok === false && r.data.msg.includes('群名'), r.data?.msg);
 r = await req('POST', `/api/admin/groups/${gid}/dissolve`, { token: ord.token, body: { confirmName: '临时测试群' } });
-check('普通管理员可解散群', r.data?.ok === true, r.data?.msg);
-r = await req('GET', '/api/admin/groups', { token: ord.token });
+check('普通管理员不能解散群', r.data?.ok === false && r.data.msg.includes('超级管理员'), r.data?.msg);
+r = await req('POST', `/api/admin/groups/${gid}/dissolve`, { token: sup.token, body: { confirmName: '临时测试群' } });
+check('超级管理员可解散群', r.data?.ok === true, r.data?.msg);
+r = await req('GET', `/api/admin/groups?userId=${sup.id}`, { token: sup.token });
 check('群已从列表移除', !(r.data.groups || []).some(g => g.id === gid));
 
 // ── 数据备份 ──

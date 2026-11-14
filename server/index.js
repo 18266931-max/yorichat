@@ -1065,10 +1065,10 @@ app.post('/api/admin/settings', (req, res) => {
   res.json({ ok: true, msg: '系统设置已保存', announcement: next.announcement, registrationOpen: next.registrationOpen });
 });
 
-// 群聊管理：列出所有群（管理员）
+// 群聊管理：列出所有群（仅超级管理员）
 app.get('/api/admin/groups', (req, res) => {
   const userId = parseInt(req.query.userId) || 0;
-  if (!userId || !isAdmin(userId)) return res.json({ ok: false, msg: '无权限' });
+  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以管理群聊' });
 
   const groups = readJSON(GROUPS_FILE);
   const members = readJSON(GROUP_MEMBERS_FILE);
@@ -1093,11 +1093,11 @@ app.get('/api/admin/groups', (req, res) => {
   res.json({ ok: true, groups: list });
 });
 
-// 解散群聊（管理员）：删除群、成员关系、群消息（需输入群名确认，防误删）
+// 解散群聊（仅超级管理员）：删除群、成员关系、群消息（需输入群名确认，防误删）
 app.post('/api/admin/groups/:groupId/dissolve', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
   const groupId = parseInt(req.params.groupId);
-  if (!userId || !isAdmin(userId)) return res.json({ ok: false, msg: '无权限' });
+  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以解散群聊' });
   if (!groupId) return res.json({ ok: false, msg: '缺少群聊ID' });
 
   const groups = readJSON(GROUPS_FILE);

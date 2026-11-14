@@ -3365,7 +3365,8 @@ export default function App() {
               })}
             </div>
 
-            {/* ── 群聊管理 ── */}
+            {/* ── 群聊管理（仅超级管理员） ── */}
+            {isSuperAdminUser && (
             <div className="admin-section">
               <div className="admin-section-title">
                 <Users size={16} /> 群聊管理
@@ -3391,6 +3392,7 @@ export default function App() {
                 </div>
               ))}
             </div>
+            )}
 
             {/* ── 系统设置（仅超级管理员） ── */}
             {isSuperAdminUser && (
