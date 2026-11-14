@@ -2877,15 +2877,17 @@ export default function App() {
         <button className={`sidebar-icon ${activeView === 'market' ? 'active' : ''}`} onClick={() => { setActiveGroupId(null); setActiveConvId(null); setActiveView('market'); }}>
           <ShoppingBag size={22} />
         </button>
-        <button className={`sidebar-icon ${activeView === 'settings' ? 'active' : ''}`} onClick={() => { setActiveGroupId(null); setActiveConvId(null); setActiveView('settings'); }}>
-          <Settings size={22} />
-        </button>
+        {/* 设置入口已移到左下角头像（点头像即进入设置） */}
         {isAdminUser && (
           <button className={`sidebar-icon admin-icon ${activeView === 'admin' ? 'active' : ''}`} onClick={() => setActiveView('admin')} title="管理后台">
             <Shield size={22} />
           </button>
         )}
-        <div className="sidebar-avatar" title={currentUser?.username} onClick={() => setActiveView('settings')}>
+        <div
+          className={`sidebar-avatar ${activeView === 'settings' ? 'active' : ''}`}
+          title={`${currentUser?.username || ''} · 设置`}
+          onClick={() => { setActiveGroupId(null); setActiveConvId(null); setActiveView('settings'); }}
+        >
           <AvatarContent avatar={currentUser?.avatar} fallback={currentUser?.username?.[0]?.toUpperCase() || '?'} />
         </div>
       </nav>

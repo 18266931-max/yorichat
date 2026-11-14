@@ -474,6 +474,11 @@ button:disabled:active { transform: none; }
   transition: all 0.25s var(--ease);
 }
 .sidebar-avatar:hover { transform: scale(1.08); }
+/* 点头像即进入设置：选中态高亮 */
+.sidebar-avatar.active {
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.9), 0 6px 18px rgba(14, 163, 113, 0.55);
+  transform: scale(1.05);
+}
 
 /* ── 中间面板 ── */
 .panel {
