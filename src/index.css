@@ -1340,6 +1340,11 @@ button:disabled:active { transform: none; }
   border-radius: 999px;
   font-weight: 600;
 }
+.admin-badge.super-badge {
+  color: #7a3d00;
+  background: linear-gradient(135deg, #ffe9b8, #ffd27a);
+  box-shadow: 0 1px 3px rgba(200, 130, 0, 0.25);
+}
 .disabled-badge {
   display: inline-flex; align-items: center; gap: 3px;
   font-size: 10px;
@@ -1375,6 +1380,10 @@ button:disabled:active { transform: none; }
 .admin-btn.make-admin:hover { background: #eaf2ff; border-color: var(--info); }
 .admin-btn.remove-admin { color: #e57a12; }
 .admin-btn.remove-admin:hover { background: #fff4e8; border-color: #e57a12; }
+.admin-btn.make-super { color: #b26a00; }
+.admin-btn.make-super:hover { background: #fff6e0; border-color: #f0a500; }
+.admin-btn.remove-super { color: #8a5a00; }
+.admin-btn.remove-super:hover { background: #fff0d0; border-color: #c98a00; }
 .admin-btn.reset-pwd { color: #7a4fd0; }
 .admin-btn.reset-pwd:hover { background: #f5efff; border-color: #7a4fd0; }
 .admin-btn.credit-btn { color: var(--gold); }

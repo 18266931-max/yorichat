@@ -4,7 +4,7 @@ import {
   UserPlus, Search, Shield, Ban, RotateCcw, Trash2, UserCheck, UserX,
   Mic, ShoppingBag, Package, ShoppingCart, Plus, X, Coins,
   Star, ArrowRightLeft, Edit3, Heart, Gift, Check, Reply,
-  Image as ImageIcon, Paperclip, FileText, Pin, Bell, BellOff, Download
+  Image as ImageIcon, Paperclip, FileText, Pin, Bell, BellOff, Download, Crown
 } from 'lucide-react';
 
 /* ═══════════════════════════════════════
@@ -1247,7 +1247,8 @@ export default function App() {
   };
 
   // ─── Admin functions ───
-  const isAdminUser = currentUser?.role === 'admin';
+  const isAdminUser = currentUser?.role === 'admin' || currentUser?.role === 'superadmin';
+  const isSuperAdminUser = currentUser?.role === 'superadmin';
 
   const loadAdminData = useCallback(async () => {
     if (!currentUser || currentUser.role !== 'admin') return;
@@ -1297,6 +1298,15 @@ export default function App() {
 
   const handleToggleAdmin = async (targetId: number) => {
     const res = await apiPost(`/admin/users/${targetId}/set-admin`, {}, currentUser!.id);
+    if (res.ok) { adminToastFn(res.msg); loadAdminData(); }
+    else adminToastFn(res.msg || '操作失败');
+  };
+
+  // 超级管理员：设置/取消超级管理员
+  const handleToggleSuperAdmin = async (targetId: number, username: string, isSuper: boolean) => {
+    const tip = isSuper ? `取消 ${username} 的超级管理员（降为普通管理员）？` : `把 ${username} 设为超级管理员？超级管理员可以任免管理员。`;
+    if (!confirm(tip)) return;
+    const res = await apiPost(`/admin/users/${targetId}/set-super`, {}, currentUser!.id);
     if (res.ok) { adminToastFn(res.msg); loadAdminData(); }
     else adminToastFn(res.msg || '操作失败');
   };
@@ -2896,6 +2906,16 @@ export default function App() {
                 <span className="settings-label">昵称</span>
                 <span className="settings-value">{currentUser?.nickname}</span>
               </div>
+              <div className="settings-item">
+                <span className="settings-label">身份</span>
+                <span className="settings-value">
+                  {currentUser?.role === 'superadmin'
+                    ? <span className="admin-badge super-badge"><Crown size={12} /> 超级管理员</span>
+                    : currentUser?.role === 'admin'
+                      ? <span className="admin-badge"><Shield size={12} /> 管理员</span>
+                      : <span style={{fontSize:'13px',color:'#8c8c8c'}}>普通用户</span>}
+                </span>
+              </div>
               {currentUser?.bio && (
                 <div className="settings-item">
                   <span className="settings-label">简介</span>
@@ -2946,6 +2966,9 @@ export default function App() {
           <div className="admin-panel">
             <div className="panel-header" style={{display:'flex',alignItems:'center',gap:'8px'}}>
               <Shield size={20} /> 管理后台
+              {isSuperAdminUser
+                ? <span className="admin-badge super-badge"><Crown size={12} /> 超级管理员</span>
+                : <span className="admin-badge"><Shield size={12} /> 管理员</span>}
             </div>
 
             {/* Stats */}
@@ -2983,7 +3006,16 @@ export default function App() {
             {/* User list */}
             <div className="admin-user-list">
               {adminLoading && <div className="admin-loading">加载中...</div>}
-              {!adminLoading && adminUsers.map(u => (
+              {!adminLoading && adminUsers.map(u => {
+                const isSuper = u.role === 'superadmin';
+                const isOrdAdmin = u.role === 'admin';
+                const isSelf = u.id === currentUser?.id;
+                // 权限：普通管理员只能管理普通用户；超级管理员可管理管理员
+                const canManage = isSelf ? false
+                  : isSuper ? false
+                  : isOrdAdmin ? isSuperAdminUser
+                  : true;
+                return (
                 <div key={u.id} className={`admin-user-card ${u.disabled ? 'disabled' : ''}`}>
                   <div className="admin-user-info">
                     <div className="admin-user-avatar" style={{background: pickColor(u.id)}}>
@@ -2992,41 +3024,53 @@ export default function App() {
                     <div className="admin-user-detail">
                       <div className="admin-user-name">
                         {u.username}
-                        {u.role === 'admin' && <span className="admin-badge"><Shield size={12} /> 管理员</span>}
+                        {isSuper && <span className="admin-badge super-badge"><Crown size={12} /> 超级管理员</span>}
+                        {isOrdAdmin && <span className="admin-badge"><Shield size={12} /> 管理员</span>}
                         {u.disabled && <span className="disabled-badge"><Ban size={12} /> 已禁</span>}
                       </div>
                       <div className="admin-user-meta">ID: {u.id} <span style={{color:'#faad14',marginLeft:'6px',display:'inline-flex',alignItems:'center',gap:'2px'}}><Coins size={11} />{u.credits || 0}</span></div>
                     </div>
                   </div>
                   <div className="admin-user-actions">
-                    {u.id !== currentUser?.id && (
-                      <>
-                        {u.disabled ? (
-                          <button className="admin-btn enable" onClick={() => handleEnableUser(u.id)} title="启用">
-                            <UserCheck size={16} />
-                          </button>
-                        ) : (
-                          u.role !== 'admin' && (
-                            <button className="admin-btn disable" onClick={() => handleDisableUser(u.id)} title="注销">
-                              <UserX size={16} />
-                            </button>
-                          )
-                        )}
-                        <button
-                          className={`admin-btn ${u.role === 'admin' ? 'remove-admin' : 'make-admin'}`}
-                          onClick={() => handleToggleAdmin(u.id)}
-                          title={u.role === 'admin' ? '取消管理员' : '设为管理员'}
-                        >
-                          <Shield size={16} />
-                        </button>
-                        <button className="admin-btn reset-pwd" onClick={() => { setResetPwdTarget(resetPwdTarget === u.id ? null : u.id); setResetPwdValue(''); setCreditTarget(null); }} title="重置密码">
-                          <RotateCcw size={16} />
-                        </button>
-                      </>
+                    {canManage && u.disabled && (
+                      <button className="admin-btn enable" onClick={() => handleEnableUser(u.id)} title="启用">
+                        <UserCheck size={16} />
+                      </button>
                     )}
-                    <button className="admin-btn credit-btn" onClick={() => { setCreditTarget(creditTarget === u.id ? null : u.id); setCreditValue(''); setResetPwdTarget(null); }} title="调整积分">
-                      <Coins size={16} />
-                    </button>
+                    {canManage && !u.disabled && (
+                      <button className="admin-btn disable" onClick={() => handleDisableUser(u.id)} title="注销">
+                        <UserX size={16} />
+                      </button>
+                    )}
+                    {/* 身份变更：仅超级管理员 */}
+                    {isSuperAdminUser && !isSelf && !isSuper && (
+                      <button
+                        className={`admin-btn ${isOrdAdmin ? 'remove-admin' : 'make-admin'}`}
+                        onClick={() => handleToggleAdmin(u.id)}
+                        title={isOrdAdmin ? '取消管理员' : '设为管理员'}
+                      >
+                        <Shield size={16} />
+                      </button>
+                    )}
+                    {isSuperAdminUser && !isSelf && (
+                      <button
+                        className={`admin-btn ${isSuper ? 'remove-super' : 'make-super'}`}
+                        onClick={() => handleToggleSuperAdmin(u.id, u.username, isSuper)}
+                        title={isSuper ? '取消超级管理员' : '设为超级管理员'}
+                      >
+                        <Crown size={16} />
+                      </button>
+                    )}
+                    {canManage && (
+                      <button className="admin-btn reset-pwd" onClick={() => { setResetPwdTarget(resetPwdTarget === u.id ? null : u.id); setResetPwdValue(''); setCreditTarget(null); }} title="重置密码">
+                        <RotateCcw size={16} />
+                      </button>
+                    )}
+                    {canManage && (
+                      <button className="admin-btn credit-btn" onClick={() => { setCreditTarget(creditTarget === u.id ? null : u.id); setCreditValue(''); setResetPwdTarget(null); }} title="调整积分">
+                        <Coins size={16} />
+                      </button>
+                    )}
                   </div>
                   {resetPwdTarget === u.id && (
                     <div className="admin-reset-pwd">
@@ -3056,7 +3100,8 @@ export default function App() {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

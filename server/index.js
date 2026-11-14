@@ -329,14 +329,14 @@ app.post('/api/register', (req, res) => {
     return res.json({ ok: false, msg: '用户名已存在' });
   }
 
-  // 首个注册用户自动成为管理员（避免无种子管理员）
+  // 首个注册用户自动成为超级管理员（避免无种子管理员）
   const isFirstUser = users.length === 0;
   const newUser = {
     id: allocId('users'),
     username: username.trim(),
     password: hashPassword(password),
     nickname: username.trim(),
-    role: isFirstUser ? 'admin' : 'user',
+    role: isFirstUser ? ROLE_SUPER : 'user',
     credits: 100,
     disabled: false,
     createdAt: new Date().toISOString(),
@@ -812,10 +812,30 @@ app.get('/api/blocks/check', (req, res) => {
 
 // ─── Admin helper ───
 
+const ROLE_SUPER = 'superadmin';
+const ROLE_ADMIN = 'admin';
+
 function isAdmin(userId) {
   users = readJSON(USERS_FILE);
   const user = users.find(u => u.id === userId);
-  return user && user.role === 'admin';
+  return !!user && (user.role === ROLE_ADMIN || user.role === ROLE_SUPER);
+}
+
+function isSuperAdmin(userId) {
+  users = readJSON(USERS_FILE);
+  const user = users.find(u => u.id === userId);
+  return !!user && user.role === ROLE_SUPER;
+}
+
+// 启动迁移：确保至少有一个超级管理员（把最早的管理员提升为超级管理员）
+function migrateSuperAdmin() {
+  const list = readJSON(USERS_FILE);
+  if (list.some(u => u.role === ROLE_SUPER)) return;
+  const firstAdmin = list.filter(u => u.role === ROLE_ADMIN).sort((a, b) => a.id - b.id)[0];
+  if (!firstAdmin) return;
+  firstAdmin.role = ROLE_SUPER;
+  writeJSON(USERS_FILE, list);
+  console.log(`[roles] 已将 ${firstAdmin.username} 提升为超级管理员`);
 }
 
 // ─── Admin APIs ───
@@ -834,7 +854,7 @@ app.get('/api/admin/users', (req, res) => {
     disabled: !!u.disabled,
     createdAt: u.createdAt || null,
   }));
-  res.json({ ok: true, users: list });
+  res.json({ ok: true, users: list, isSuperAdmin: isSuperAdmin(userId) });
 });
 
 // 注销用户账号（管理员）
@@ -847,7 +867,10 @@ app.post('/api/admin/users/:targetId/disable', (req, res) => {
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
-  if (target.role === 'admin') return res.json({ ok: false, msg: '不能注销管理员账号' });
+  if (target.role === ROLE_SUPER) return res.json({ ok: false, msg: '不能注销超级管理员账号' });
+  if (target.role === ROLE_ADMIN && !isSuperAdmin(userId)) {
+    return res.json({ ok: false, msg: '普通管理员不能操作管理员账号，请联系超级管理员' });
+  }
 
   target.disabled = true;
   writeJSON(USERS_FILE, users);
@@ -874,6 +897,10 @@ app.post('/api/admin/users/:targetId/enable', (req, res) => {
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
+  if (target.role === ROLE_SUPER) return res.json({ ok: false, msg: '不能操作超级管理员账号' });
+  if (target.role === ROLE_ADMIN && !isSuperAdmin(userId)) {
+    return res.json({ ok: false, msg: '普通管理员不能操作管理员账号，请联系超级管理员' });
+  }
 
   target.disabled = false;
   target.role = target.role || 'user';
@@ -881,32 +908,53 @@ app.post('/api/admin/users/:targetId/enable', (req, res) => {
   res.json({ ok: true, msg: '已启用用户 ' + target.username });
 });
 
-// 设置/取消管理员
+// 设置/取消普通管理员（仅超级管理员）
 app.post('/api/admin/users/:targetId/set-admin', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
   const targetId = parseInt(req.params.targetId);
-  if (!userId || !isAdmin(userId)) return res.json({ ok: false, msg: '无权限' });
+  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以修改他人身份' });
 
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
+  if (targetId === userId) return res.json({ ok: false, msg: '不能修改自己的身份' });
+  if (target.role === ROLE_SUPER) return res.json({ ok: false, msg: '请使用"设为超级管理员"来调整超级管理员' });
 
-  const newRole = target.role === 'admin' ? 'user' : 'admin';
-  // 防止把最后一个管理员降级/自我降级导致后台永久锁死
-  if (newRole === 'user' && target.role === 'admin') {
-    const adminCount = users.filter(u => u.role === 'admin').length;
-    if (targetId === userId) return res.json({ ok: false, msg: '不能取消自己的管理员权限' });
-    if (adminCount <= 1) return res.json({ ok: false, msg: '至少需要保留一个管理员' });
-  }
-
+  const newRole = target.role === ROLE_ADMIN ? 'user' : ROLE_ADMIN;
   target.role = newRole;
   // 设为管理员时自动解除禁用
-  if (newRole === 'admin') target.disabled = false;
+  if (newRole === ROLE_ADMIN) target.disabled = false;
   writeJSON(USERS_FILE, users);
-  res.json({ ok: true, msg: newRole === 'admin' ? '已设为管理员' : '已取消管理员', role: newRole });
+  res.json({ ok: true, msg: newRole === ROLE_ADMIN ? '已设为管理员' : '已取消管理员', role: newRole });
 });
 
-// 重置用户密码（管理员）
+// 设置/取消超级管理员（仅超级管理员；至少保留一个超级管理员）
+app.post('/api/admin/users/:targetId/set-super', (req, res) => {
+  const userId = parseInt(req.headers['x-user-id']) || 0;
+  const targetId = parseInt(req.params.targetId);
+  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以操作' });
+
+  users = readJSON(USERS_FILE);
+  const target = users.find(u => u.id === targetId);
+  if (!target) return res.json({ ok: false, msg: '用户不存在' });
+  if (targetId === userId) return res.json({ ok: false, msg: '不能修改自己的超级管理员身份' });
+
+  if (target.role === ROLE_SUPER) {
+    // 降级为普通管理员前，确保还有别的超级管理员
+    const superCount = users.filter(u => u.role === ROLE_SUPER).length;
+    if (superCount <= 1) return res.json({ ok: false, msg: '至少需要保留一个超级管理员' });
+    target.role = ROLE_ADMIN;
+    writeJSON(USERS_FILE, users);
+    return res.json({ ok: true, msg: `已取消 ${target.username} 的超级管理员（降为普通管理员）`, role: ROLE_ADMIN });
+  }
+
+  target.role = ROLE_SUPER;
+  target.disabled = false;
+  writeJSON(USERS_FILE, users);
+  res.json({ ok: true, msg: `已将 ${target.username} 设为超级管理员`, role: ROLE_SUPER });
+});
+
+// 重置用户密码（管理员；超级管理员可重置管理员）
 app.post('/api/admin/users/:targetId/reset-password', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
   const targetId = parseInt(req.params.targetId);
@@ -920,8 +968,10 @@ app.post('/api/admin/users/:targetId/reset-password', (req, res) => {
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
-  // 不允许管理员重置其他管理员的密码（避免互相越权）
-  if (target.role === 'admin') return res.json({ ok: false, msg: '不能重置其他管理员的密码' });
+  if (target.role === ROLE_SUPER) return res.json({ ok: false, msg: '不能重置超级管理员的密码' });
+  if (target.role === ROLE_ADMIN && !isSuperAdmin(userId)) {
+    return res.json({ ok: false, msg: '普通管理员不能重置管理员密码，请联系超级管理员' });
+  }
 
   target.password = hashPassword(newPassword);
   writeJSON(USERS_FILE, users);
@@ -960,7 +1010,8 @@ app.get('/api/admin/stats', (req, res) => {
       totalUsers: users.length,
       activeUsers: users.filter(u => !u.disabled).length,
       disabledUsers: users.filter(u => u.disabled).length,
-      adminCount: users.filter(u => u.role === 'admin').length,
+      adminCount: users.filter(u => u.role === ROLE_ADMIN || u.role === ROLE_SUPER).length,
+      superAdminCount: users.filter(u => u.role === ROLE_SUPER).length,
       totalMessages: messages.length,
       totalFriendships: new Set(friends.map(f => `${Math.min(f.userId, f.friendId)}-${Math.max(f.userId, f.friendId)}`)).size,
     },
@@ -1006,6 +1057,10 @@ app.post('/api/admin/users/:targetId/credits', (req, res) => {
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
+  if (target.role === ROLE_SUPER) return res.json({ ok: false, msg: '不能调整超级管理员的积分' });
+  if (target.role === ROLE_ADMIN && !isSuperAdmin(userId)) {
+    return res.json({ ok: false, msg: '普通管理员不能调整管理员积分，请联系超级管理员' });
+  }
 
   target.credits = Math.max(0, (target.credits || 0) + numAmount);
   writeJSON(USERS_FILE, users);
@@ -2328,6 +2383,7 @@ function purgeStaleTombstones() {
 }
 purgeStaleTombstones();
 initCounter();
+migrateSuperAdmin();
 
 // 仅当直接运行本文件时才监听端口（被 server.prod.js import 时不重复监听）
 const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
