@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'fs';
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, join, resolve } from 'path';
@@ -30,12 +30,58 @@ const GROUPS_FILE = join(DATA_DIR, 'groups.json');
 const GROUP_MEMBERS_FILE = join(DATA_DIR, 'group_members.json');
 const GROUP_MESSAGES_FILE = join(DATA_DIR, 'group_messages.json');
 const CONV_SETTINGS_FILE = join(DATA_DIR, 'conv_settings.json');
+const COUNTER_FILE = join(DATA_DIR, 'counter.json');
+
+/* ─── 单调递增消息 ID 计数器 ───
+   避免"全表 max+1"在最高 id 被物理删除后回退，导致客户端 after 水位高挂、新消息永不投递 */
+let idCounter = { messages: 0, groupMessages: 0 };
+try {
+  if (existsSync(COUNTER_FILE)) idCounter = JSON.parse(readFileSync(COUNTER_FILE, 'utf-8')) || idCounter;
+} catch { idCounter = { messages: 0, groupMessages: 0 }; }
+
+function saveCounter() {
+  writeFileSync(COUNTER_FILE, JSON.stringify(idCounter), 'utf-8');
+}
+
+function initCounter() {
+  try {
+    const maxM = readJSON(MESSAGES_FILE).reduce((m, x) => Math.max(m, x.id || 0), 0);
+    const maxG = readJSON(GROUP_MESSAGES_FILE).reduce((m, x) => Math.max(m, x.id || 0), 0);
+    idCounter.messages = Math.max(idCounter.messages || 0, maxM);
+    idCounter.groupMessages = Math.max(idCounter.groupMessages || 0, maxG);
+    saveCounter();
+  } catch (err) {
+    console.error(`[counter] 初始化失败: ${err.message}`);
+  }
+}
+
+function nextMessageId() {
+  idCounter.messages = (idCounter.messages || 0) + 1;
+  saveCounter();
+  return idCounter.messages;
+}
+
+function nextGroupMessageId() {
+  idCounter.groupMessages = (idCounter.groupMessages || 0) + 1;
+  saveCounter();
+  return idCounter.groupMessages;
+}
 
 // ─── 文件上传（base64 JSON 方式，无额外依赖）───
 const UPLOADS_DIR = join(DATA_DIR, 'uploads');
 try { mkdirSync(UPLOADS_DIR, { recursive: true }); } catch {}
-const ALLOWED_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp','svg','txt','pdf','doc','docx','xls','xlsx','ppt','pptx','zip','rar','7z','tar','gz','mp3','mp4','webm','mov','json','csv','md']);
-app.use('/uploads', express.static(UPLOADS_DIR));
+// 注意：不含 svg（同源存储型 XSS 风险）
+const ALLOWED_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp','txt','pdf','doc','docx','xls','xlsx','ppt','pptx','zip','rar','7z','tar','gz','mp3','mp4','webm','mov','json','csv','md']);
+const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp']);
+// 静态托管：加 nosniff；非图片强制下载，避免 HTML/SVG 类内容在同源内被解析执行
+app.use('/uploads', (req, res, next) => {
+  const ext = (req.path.match(/\.([A-Za-z0-9]+)$/) || [])[1];
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (!ext || !IMAGE_EXTS.has(ext.toLowerCase())) {
+    res.setHeader('Content-Disposition', 'attachment');
+  }
+  next();
+}, express.static(UPLOADS_DIR));
 
 // 税率：卖家获得 80%
 const SELLER_RATE = 0.8;
@@ -45,17 +91,23 @@ function readJSON(file) {
   try {
     return JSON.parse(readFileSync(file, 'utf-8'));
   } catch (err) {
-    // 数据文件损坏时不让整个服务崩溃：记录并返回空数组
+    // 数据文件损坏：先备份为 .corrupt-<时间戳> 保全数据，再以空数据继续（不让整个服务崩溃）
     console.error(`[readJSON] 解析失败 ${file}: ${err.message}`);
+    try {
+      const backup = `${file}.corrupt-${Date.now()}`;
+      renameSync(file, backup);
+      console.error(`[readJSON] 已备份损坏文件到 ${backup}`);
+    } catch (e2) {
+      console.error(`[readJSON] 备份失败: ${e2.message}`);
+    }
     return [];
   }
 }
 function writeJSON(file, data) {
-  try {
-    writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (err) {
-    console.error(`[writeJSON] 写入失败 ${file}: ${err.message}`);
-  }
+  // 原子写：先写临时文件再重命名（Windows rename 会覆盖目标），失败则抛出由上层处理
+  const tmp = `${file}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+  renameSync(tmp, file);
 }
 
 // 给消息列表附加红包状态（active / claimed / expired / my_claimed）
@@ -130,7 +182,9 @@ function verifyToken(token) {
   if (!token || typeof token !== 'string') return 0;
   const parts = token.split('.');
   if (parts.length !== 3 || parts[0] !== 'tpc') return 0;
-  const uid = parseInt(parts[1], 10);
+  // 严格数字解析：拒绝 "01" 这类变体
+  if (!/^\d+$/.test(parts[1])) return 0;
+  const uid = Number(parts[1]);
   if (!uid) return 0;
   const expected = createHmac('sha256', SECRET).update(String(uid)).digest('hex');
   const a = Buffer.from(expected);
@@ -154,7 +208,11 @@ function publicUser(user) {
    - 禁用用户一律拒绝（403）。
    ═══════════════════════════════════════ */
 app.use((req, res, next) => {
-  if (!req.path.startsWith('/api')) return next();
+  // 身份只信任中间件注入：先剥掉客户端自带的伪造头
+  delete req.headers['x-user-id'];
+
+  // 大小写不敏感匹配 /api（Express 路由默认大小写不敏感，避免 /API/... 绕过鉴权）
+  if (!/^\/api(\/|$)/i.test(req.path)) return next();
   const p = req.path.slice(4); // 去掉 /api 前缀
   const method = req.method;
 
@@ -180,9 +238,24 @@ app.use((req, res, next) => {
     return next();
   }
 
-  // 公开端点：若带了有效 token 也注入身份（用于 market 的 bought、redpacket 的 claimStatus 等）
+  // 公开端点：若带了有效 token 也注入身份（用于 market 的 bought、redpacket 的 claimStatus 等）；
+  // 无 token 时把 userId 归零，避免匿名查询他人私有状态
   if (uid) injectIdentity(req, uid);
+  else {
+    const q = Object.assign({}, req.query, { userId: '0' });
+    Object.defineProperty(req, 'query', { value: q, enumerable: true, configurable: true, writable: true });
+  }
   next();
+});
+
+// 统一 JSON 错误处理（避免 HTML 错误页 + 堆栈泄露）
+app.use((err, req, res, next) => {
+  console.error('[error]', err && err.message);
+  if (res.headersSent) return next(err);
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ ok: false, msg: '请求体过大' });
+  }
+  res.status(500).json({ ok: false, msg: '服务器内部错误' });
 });
 
 function injectIdentity(req, userId) {
@@ -390,7 +463,7 @@ app.get('/api/messages', (req, res) => {
   const after = parseInt(req.query.after) || 0; // 返回 id 大于 after 的消息
   const changedAfter = parseInt(req.query.changedAfter) || 0; // 返回 updatedAt 之后变更过的消息（撤回/已读/删除）
 
-  if (!userId || !peerId) return res.json({ ok: true, messages: [], changed: [] });
+  if (!userId || !peerId) return res.json({ ok: true, messages: [], changed: [], serverTime: Date.now() });
 
   const all = readJSON(MESSAGES_FILE);
   const related = all.filter(m =>
@@ -409,17 +482,33 @@ app.get('/api/messages', (req, res) => {
   fresh = attachReplyPreview(fresh, all);
   const changedOut = attachReplyPreview(changed, all).map(m => attachRedpacketStatus([m], userId)[0]);
 
-  res.json({ ok: true, messages: fresh, changed: changedOut });
+  res.json({ ok: true, messages: fresh, changed: changedOut, serverTime: Date.now() });
 });
 
 // 发送消息（支持引用回复 replyToId）
 app.post('/api/messages/send', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
-  const { receiverId, content, type, redpacketId, replyToId, fileUrl, fileName, fileSize } = req.body;
+  const receiverId = parseInt(req.body.receiverId) || 0;
+  const { content, type, redpacketId, replyToId, fileUrl, fileName, fileSize } = req.body;
 
   if (!userId) return res.json({ ok: false, msg: '未登录' });
   if (!receiverId) return res.json({ ok: false, msg: '缺少接收者' });
-  if (!content || !content.trim()) return res.json({ ok: false, msg: '消息不能为空' });
+  // 类型与长度校验，避免 500 / 超长内容入库
+  if (typeof content !== 'string' || !content.trim()) return res.json({ ok: false, msg: '消息不能为空' });
+  if (content.length > 4000) return res.json({ ok: false, msg: '消息不能超过4000字' });
+  if (fileName != null && (typeof fileName !== 'string' || fileName.length > 255)) {
+    return res.json({ ok: false, msg: '文件名过长或无效' });
+  }
+  if (fileSize != null && (!Number.isFinite(Number(fileSize)) || Number(fileSize) < 0)) {
+    return res.json({ ok: false, msg: '文件大小无效' });
+  }
+  if (fileUrl != null && (typeof fileUrl !== 'string' || !fileUrl.startsWith('/uploads/'))) {
+    return res.json({ ok: false, msg: '文件地址无效' });
+  }
+  // 接收者必须存在
+  if (!readJSON(USERS_FILE).some(u => u.id === receiverId)) {
+    return res.json({ ok: false, msg: '接收者不存在' });
+  }
 
   // 检查是否被对方拉黑（对方拉黑了我 → 我不能发给对方）
   const blocks = readJSON(BLOCKS_FILE);
@@ -451,7 +540,7 @@ app.post('/api/messages/send', (req, res) => {
   if (friendUpdated) writeJSON(FRIENDS_FILE, friends);
 
   let messages = readJSON(MESSAGES_FILE);
-  const nextId = messages.length > 0 ? Math.max(...messages.map(m => m.id)) + 1 : 1;
+  const nextId = nextMessageId();
 
   const msg = {
     id: nextId,
@@ -528,7 +617,7 @@ app.post('/api/messages/:messageId/recall', (req, res) => {
 // 标记与某好友的消息为已读
 app.post('/api/messages/read', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
-  const { peerId } = req.body;
+  const peerId = parseInt(req.body.peerId) || 0;
 
   if (!userId) return res.json({ ok: false, msg: '未登录' });
   if (!peerId) return res.json({ ok: false, msg: '缺少参数' });
@@ -611,7 +700,8 @@ app.get('/api/conv-settings', (req, res) => {
 // 更新会话设置（pinned / muted）
 app.post('/api/conv-settings', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
-  const { peerId, pinned, muted } = req.body;
+  const peerId = parseInt(req.body.peerId) || 0;
+  const { pinned, muted } = req.body;
 
   if (!userId) return res.json({ ok: false, msg: '未登录' });
   if (!peerId) return res.json({ ok: false, msg: '缺少参数' });
@@ -774,6 +864,13 @@ app.post('/api/admin/users/:targetId/set-admin', (req, res) => {
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
 
   const newRole = target.role === 'admin' ? 'user' : 'admin';
+  // 防止把最后一个管理员降级/自我降级导致后台永久锁死
+  if (newRole === 'user' && target.role === 'admin') {
+    const adminCount = users.filter(u => u.role === 'admin').length;
+    if (targetId === userId) return res.json({ ok: false, msg: '不能取消自己的管理员权限' });
+    if (adminCount <= 1) return res.json({ ok: false, msg: '至少需要保留一个管理员' });
+  }
+
   target.role = newRole;
   // 设为管理员时自动解除禁用
   if (newRole === 'admin') target.disabled = false;
@@ -1524,6 +1621,11 @@ app.post('/api/redpackets/send', (req, res) => {
     if (userId === receiverId) return res.json({ ok: false, msg: '不能给自己发红包' });
     const receiver = users.find(u => u.id === receiverId);
     if (!receiver) return res.json({ ok: false, msg: '接收者不存在' });
+    // 对方已拉黑我 → 红包消息发不出去，提前拒绝，避免扣了积分对方收不到
+    const blocks = readJSON(BLOCKS_FILE);
+    if (blocks.some(b => b.blockerId === receiverId && b.blockedId === userId)) {
+      return res.json({ ok: false, msg: '你已被对方拉黑，无法发红包' });
+    }
   }
 
   // 群聊红包检查
@@ -1877,7 +1979,17 @@ app.post('/api/groups/:groupId/messages', (req, res) => {
 
   if (!userId) return res.json({ ok: false, msg: '未登录' });
   if (!groupId) return res.json({ ok: false, msg: '缺少群聊ID' });
-  if (!content || !content.trim()) return res.json({ ok: false, msg: '消息不能为空' });
+  if (typeof content !== 'string' || !content.trim()) return res.json({ ok: false, msg: '消息不能为空' });
+  if (content.length > 4000) return res.json({ ok: false, msg: '消息不能超过4000字' });
+  if (fileName != null && (typeof fileName !== 'string' || fileName.length > 255)) {
+    return res.json({ ok: false, msg: '文件名过长或无效' });
+  }
+  if (fileSize != null && (!Number.isFinite(Number(fileSize)) || Number(fileSize) < 0)) {
+    return res.json({ ok: false, msg: '文件大小无效' });
+  }
+  if (fileUrl != null && (typeof fileUrl !== 'string' || !fileUrl.startsWith('/uploads/'))) {
+    return res.json({ ok: false, msg: '文件地址无效' });
+  }
 
   // 检查用户是否是群聊成员
   let groupMembers = readJSON(GROUP_MEMBERS_FILE);
@@ -1895,7 +2007,7 @@ app.post('/api/groups/:groupId/messages', (req, res) => {
 
   // 发送群消息
   let groupMessages = readJSON(GROUP_MESSAGES_FILE);
-  const nextId = groupMessages.length > 0 ? Math.max(...groupMessages.map(m => m.id)) + 1 : 1;
+  const nextId = nextGroupMessageId();
 
   const msg = {
     id: nextId,
@@ -1960,7 +2072,7 @@ app.get('/api/groups/:groupId/messages', (req, res) => {
     return out;
   };
 
-  res.json({ ok: true, messages: decorate(messages), changed: decorate(changed) });
+  res.json({ ok: true, messages: decorate(messages), changed: decorate(changed), serverTime: Date.now() });
 });
 
 // 删除单条群消息（发送者或群主可删）
@@ -2060,16 +2172,21 @@ function purgeStaleTombstones() {
   const now = Date.now();
   const WEEK = 7 * 24 * 60 * 60 * 1000;
   for (const file of [MESSAGES_FILE, GROUP_MESSAGES_FILE]) {
-    const list = readJSON(file);
-    if (!Array.isArray(list) || list.length === 0) continue;
-    const kept = list.filter(m => !(m.deleted && (now - (m.updatedAt || m.timestamp || 0)) > WEEK));
-    if (kept.length !== list.length) {
-      writeJSON(file, kept);
-      console.log(`[purge] ${file}: 清理墓碑消息 ${list.length - kept.length} 条`);
+    try {
+      const list = readJSON(file);
+      if (!Array.isArray(list) || list.length === 0) continue;
+      const kept = list.filter(m => !(m.deleted && (now - (m.updatedAt || m.timestamp || 0)) > WEEK));
+      if (kept.length !== list.length) {
+        writeJSON(file, kept);
+        console.log(`[purge] ${file}: 清理墓碑消息 ${list.length - kept.length} 条`);
+      }
+    } catch (err) {
+      console.error(`[purge] ${file} 清理失败: ${err.message}`);
     }
   }
 }
 purgeStaleTombstones();
+initCounter();
 
 // 仅当直接运行本文件时才监听端口（被 server.prod.js import 时不重复监听）
 const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;

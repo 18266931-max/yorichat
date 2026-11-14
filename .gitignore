@@ -3,24 +3,29 @@ logs
 *.log
 npm-debug.log*
 yarn-debug.log*
+yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
 
-# Dependencies & builds
 node_modules
 dist
 dist-ssr
+*.local
 
 # Runtime data & secrets（绝不能提交）
 server/*.json
 server/uploads/
 server/.secret
+server/*.tmp-*
+*.corrupt-*
 
-# Editor / OS
+# Editor directories and files
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
-*.local
-
-# Windows dev helper
-start-vite.bat
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

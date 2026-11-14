@@ -179,9 +179,9 @@ const EMOJIS = ['😀','😂','🤣','😊','😍','🥰','😘','😜','🤔','
 const COLORS = ['#1890ff','#722ed1','#eb2f96','#fa8c16','#52c41a','#13c2c2','#f5222d','#2f54eb','#faad14','#a0d911'];
 function pickColor(id: number) { return COLORS[id % COLORS.length]; }
 
-// 渲染消息内容，高亮 @提及
+// 渲染消息内容，高亮 @提及（前向否定：避免把 email@x.com、a@b 这类误判为提及）
 function renderWithMentions(content: string) {
-  const parts = content.split(/(@[\u4e00-\u9fa5A-Za-z0-9_\-]+)/g);
+  const parts = content.split(/(?<![\w.])@[\u4e00-\u9fa5A-Za-z0-9_\-]+/g);
   return (
     <>
       {parts.map((p, i) =>
@@ -449,6 +449,12 @@ function ChatView({ conversation, currentUser, onSend, isBlockedByPeer, isPeerBl
   const [isListening, setIsListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
+  // 定时刷新时间基准：让"5分钟可撤回"的按钮在超时后自动置灰（无需重新渲染触发）
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
   const endRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
   const voiceBaseTextRef = useRef<string>('');
@@ -548,26 +554,36 @@ function ChatView({ conversation, currentUser, onSend, isBlockedByPeer, isPeerBl
         {conversation.messages.map(msg => {
           const isSelf = msg.senderId === currentUser.id;
           const chatMsg = msg as ChatMessage;
-          const msgAge = Date.now() - new Date(msg.timestamp).getTime();
+          const msgAge = now - new Date(msg.timestamp).getTime();
           const canRecall = isSelf && chatMsg.type !== 'redpacket' && !chatMsg.recalled && msgAge < 5 * 60 * 1000;
           const recallExpired = isSelf && chatMsg.type !== 'redpacket' && !chatMsg.recalled && msgAge >= 5 * 60 * 1000;
           const msgKeyId = typeof msg.id === 'string' && msg.id.startsWith('server-') ? Number(msg.id.slice(7)) : (typeof msg.id === 'number' ? msg.id : 0);
+          const canReply = msgKeyId > 0;
           const actions = (
             <div className="msg-actions">
-              <button className="msg-action" title="回复" onClick={() => setReplyTo(chatMsg)}>
+              <button className="msg-action" title={canReply ? '回复' : '消息发送中，暂不可回复'} disabled={!canReply} onClick={() => canReply && setReplyTo(chatMsg)}>
                 <Reply size={12} />
               </button>
               {(canRecall || recallExpired) && (
                 <button
                   className={`msg-action ${recallExpired ? 'msg-action-disabled' : ''}`}
                   title={recallExpired ? '发送超过5分钟，无法撤回' : '撤回'}
-                  disabled={recallExpired}
+                  disabled={recallExpired || msgKeyId <= 0}
                   onClick={() => onRecallMessage(conversation.peerId, msgKeyId)}
                 >
                   <RotateCcw size={12} />
                 </button>
               )}
-              <button className="msg-action msg-action-danger" title="删除" onClick={() => onDeleteMessage(conversation.peerId, msgKeyId)}>
+              <button
+                className="msg-action msg-action-danger"
+                title="删除（双方都会删除）"
+                disabled={msgKeyId <= 0}
+                onClick={() => {
+                  if (msgKeyId > 0 && confirm('删除这条消息？双方都会看不到（不可恢复）')) {
+                    onDeleteMessage(conversation.peerId, msgKeyId);
+                  }
+                }}
+              >
                 <Trash2 size={12} />
               </button>
             </div>
@@ -597,6 +613,12 @@ function ChatView({ conversation, currentUser, onSend, isBlockedByPeer, isPeerBl
                   </div>
                 ) : chatMsg.type === 'image' ? (
                   <div className="msg-bubble">
+                    {chatMsg.replyTo && (
+                      <div className="msg-reply">
+                        <span className="msg-reply-name">{chatMsg.replyTo.senderName}</span>
+                        <span className="msg-reply-content">{chatMsg.replyTo.content}</span>
+                      </div>
+                    )}
                     <img
                       className="msg-image"
                       src={chatMsg.fileUrl || undefined}
@@ -607,6 +629,12 @@ function ChatView({ conversation, currentUser, onSend, isBlockedByPeer, isPeerBl
                   </div>
                 ) : chatMsg.type === 'file' ? (
                   <div className="msg-bubble">
+                    {chatMsg.replyTo && (
+                      <div className="msg-reply">
+                        <span className="msg-reply-name">{chatMsg.replyTo.senderName}</span>
+                        <span className="msg-reply-content">{chatMsg.replyTo.content}</span>
+                      </div>
+                    )}
                     <div className="msg-file" onClick={() => chatMsg.fileUrl && window.open(chatMsg.fileUrl, '_blank')}>
                       <FileText size={20} />
                       <div className="msg-file-info">
@@ -658,8 +686,8 @@ function ChatView({ conversation, currentUser, onSend, isBlockedByPeer, isPeerBl
               <span className="btn-label">发红包</span>
             </button>
             <button className="toolbar-btn" onClick={() => setShowEmoji(v => !v)}><Smile size={18} /></button>
-            <FileSendButton kind="image" onUpload={onUpload} onPicked={(info) => onSendMedia(conversation.id, info, 'image', replyTo ? Number(String(replyTo.id).replace('server-', '')) : undefined)} />
-            <FileSendButton kind="file" onUpload={onUpload} onPicked={(info) => onSendMedia(conversation.id, info, 'file', replyTo ? Number(String(replyTo.id).replace('server-', '')) : undefined)} />
+            <FileSendButton kind="image" onUpload={onUpload} onPicked={(info) => { onSendMedia(conversation.id, info, 'image', replyTo ? Number(String(replyTo.id).replace('server-', '')) : undefined); setReplyTo(null); }} />
+            <FileSendButton kind="file" onUpload={onUpload} onPicked={(info) => { onSendMedia(conversation.id, info, 'file', replyTo ? Number(String(replyTo.id).replace('server-', '')) : undefined); setReplyTo(null); }} />
             {voiceSupported && (
               <button className={`toolbar-btn ${isListening ? 'voice-active' : ''}`} onClick={toggleVoice}>
                 <Mic size={18} />
@@ -708,6 +736,12 @@ function GroupChatView({ groupId, currentUser, groupMessages, onSend, onAddMembe
   const [isListening, setIsListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [replyTo, setReplyTo] = useState<GroupMessage | null>(null);
+  // 定时刷新时间基准：让"5分钟可撤回"的按钮在超时后自动置灰
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
   const endRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
   const voiceBaseTextRef = useRef<string>('');
@@ -788,25 +822,35 @@ function GroupChatView({ groupId, currentUser, groupMessages, onSend, onAddMembe
       <div className="chat-messages">
         {groupMessages.map(msg => {
           const isSelf = msg.senderId === currentUser.id;
-          const msgAge = Date.now() - msg.timestamp;
+          const msgAge = now - msg.timestamp;
           const canRecall = isSelf && msg.type !== 'redpacket' && !msg.recalled && msgAge < 5 * 60 * 1000;
           const recallExpired = isSelf && msg.type !== 'redpacket' && !msg.recalled && msgAge >= 5 * 60 * 1000;
+          const canReply = Number.isFinite(msg.id) && msg.id > 0;
           const actions = (
             <div className="msg-actions">
-              <button className="msg-action" title="回复" onClick={() => setReplyTo(msg)}>
+              <button className="msg-action" title={canReply ? '回复' : '消息发送中，暂不可回复'} disabled={!canReply} onClick={() => canReply && setReplyTo(msg)}>
                 <Reply size={12} />
               </button>
               {(canRecall || recallExpired) && (
                 <button
                   className={`msg-action ${recallExpired ? 'msg-action-disabled' : ''}`}
                   title={recallExpired ? '发送超过5分钟，无法撤回' : '撤回'}
-                  disabled={recallExpired}
+                  disabled={recallExpired || !canReply}
                   onClick={() => onRecallMessage(groupId, msg.id)}
                 >
                   <RotateCcw size={12} />
                 </button>
               )}
-              <button className="msg-action msg-action-danger" title="删除" onClick={() => onDeleteMessage(groupId, msg.id)}>
+              <button
+                className="msg-action msg-action-danger"
+                title="删除（群内都会看不到）"
+                disabled={!canReply}
+                onClick={() => {
+                  if (canReply && confirm('删除这条群消息？群内所有人都会看不到（不可恢复）')) {
+                    onDeleteMessage(groupId, msg.id);
+                  }
+                }}
+              >
                 <Trash2 size={12} />
               </button>
             </div>
@@ -840,6 +884,12 @@ function GroupChatView({ groupId, currentUser, groupMessages, onSend, onAddMembe
                   </div>
                 ) : msg.type === 'image' ? (
                   <div className="msg-bubble">
+                    {msg.replyTo && (
+                      <div className="msg-reply">
+                        <span className="msg-reply-name">{msg.replyTo.senderName}</span>
+                        <span className="msg-reply-content">{msg.replyTo.content}</span>
+                      </div>
+                    )}
                     <img
                       className="msg-image"
                       src={msg.fileUrl || undefined}
@@ -850,6 +900,12 @@ function GroupChatView({ groupId, currentUser, groupMessages, onSend, onAddMembe
                   </div>
                 ) : msg.type === 'file' ? (
                   <div className="msg-bubble">
+                    {msg.replyTo && (
+                      <div className="msg-reply">
+                        <span className="msg-reply-name">{msg.replyTo.senderName}</span>
+                        <span className="msg-reply-content">{msg.replyTo.content}</span>
+                      </div>
+                    )}
                     <div className="msg-file" onClick={() => msg.fileUrl && window.open(msg.fileUrl, '_blank')}>
                       <FileText size={20} />
                       <div className="msg-file-info">
@@ -900,8 +956,8 @@ function GroupChatView({ groupId, currentUser, groupMessages, onSend, onAddMembe
               <span className="btn-label">发红包</span>
             </button>
             <button className="toolbar-btn" onClick={() => setShowEmoji(v => !v)}><Smile size={18} /></button>
-            <FileSendButton kind="image" onUpload={onUpload} onPicked={(info) => onSendMedia(groupId, info, 'image', replyTo?.id)} />
-            <FileSendButton kind="file" onUpload={onUpload} onPicked={(info) => onSendMedia(groupId, info, 'file', replyTo?.id)} />
+            <FileSendButton kind="image" onUpload={onUpload} onPicked={(info) => { onSendMedia(groupId, info, 'image', replyTo?.id); setReplyTo(null); }} />
+            <FileSendButton kind="file" onUpload={onUpload} onPicked={(info) => { onSendMedia(groupId, info, 'file', replyTo?.id); setReplyTo(null); }} />
             {voiceSupported && (
               <button className={`toolbar-btn ${isListening ? 'voice-active' : ''}`} onClick={toggleVoice}>
                 <Mic size={18} />
@@ -1050,9 +1106,12 @@ export default function App() {
   const pollingRef = useRef(false);
   // 搜索请求序号：防止快速输入时旧响应覆盖新结果
   const searchSeqRef = useRef(0);
+  // 变更同步基准：上一轮服务端返回的 serverTime（用服务器时钟，避免客户端时钟偏差丢变更）
+  const lastServerTimeRef = useRef(0);
 
   const activeConversation = conversations.find(c => c.id === activeConvId) ?? null;
-  const totalUnread = conversations.reduce((s, c) => s + c.unread, 0);
+  // 免打扰的会话不计入侧栏未读角标（避免红点数字找不到来源）
+  const totalUnread = conversations.reduce((s, c) => s + (convSettings[c.peerId]?.muted ? 0 : c.unread), 0);
 
   // ─── Auth handlers ───
   const handleLogin = (user: ChatUser) => {
@@ -1526,19 +1585,19 @@ export default function App() {
     if (res.ok) {
       setConversations(prev => prev.map(c => {
         if (c.peerId !== peerId) return c;
-        return { ...c, messages: [] };
+        // 预览、未读计数、游标一并清空，避免列表残留旧内容
+        return { ...c, messages: [], lastMessage: undefined, unread: 0 };
       }));
-      if (activeConversation?.peerId === peerId) {
-        setConversations(prev => prev.map(c => {
-          if (c.id !== activeConversation.id) return c;
-          return { ...c, messages: [] };
-        }));
-      }
+      setLastMsgId(prev => {
+        const next = { ...prev };
+        delete next[peerId];
+        return next;
+      });
       adminToastFn(`已删除 ${res.deleted} 条聊天记录`);
     } else {
       adminToastFn(res.msg || '删除失败');
     }
-  };  
+  };
 
   // Group handlers
   const handleCreateGroup = async () => {
@@ -1587,6 +1646,8 @@ export default function App() {
     }, currentUser.id);
     if (res.ok) {
       // 消息发送成功，会通过轮询更新
+    } else {
+      adminToastFn(res.msg || '发送失败');
     }
   };
 
@@ -1667,18 +1728,28 @@ export default function App() {
         fileUrl: info.url, fileName: info.name, fileSize: info.size, replyToId,
       }, currentUser.id);
       if (res.ok) {
-        setConversations(prev => prev.map(c =>
-          c.id === convId
-            ? { ...c, messages: c.messages.map(m => (m.id === msg.id ? { ...m, id: `server-${res.message.id}` } : m)) }
-            : c
-        ));
-        setLastMsgId(prev => ({ ...prev, [conv.peerId]: res.message.id }));
+        // 替换乐观消息为服务端 id，并按 id 去重（轮询可能已先拉到同一条）
+        setConversations(prev => prev.map(c => {
+          if (c.id !== convId) return c;
+          const replaced = c.messages.map(m => (m.id === msg.id ? { ...m, id: `server-${res.message.id}` } : m));
+          const seen = new Set<string>();
+          const unique = replaced.filter(m => (seen.has(m.id) ? false : (seen.add(m.id), true)));
+          return { ...c, messages: unique };
+        }));
+        // 不覆盖 lastMsgId：由轮询自然推进，避免跳过对方更早发出、尚未拉到的消息
       } else {
         setConversations(prev => prev.map(c =>
           c.id === convId ? { ...c, messages: c.messages.filter(m => m.id !== msg.id) } : c
         ));
+        adminToastFn(res.msg || '发送失败');
       }
-    } catch {}
+    } catch {
+      // 网络异常：移除乐观消息并提示，避免残留一条发不出去的幽灵消息
+      setConversations(prev => prev.map(c =>
+        c.id === convId ? { ...c, messages: c.messages.filter(m => m.id !== msg.id) } : c
+      ));
+      adminToastFn('网络异常，发送失败');
+    }
   };
 
   // 发送媒体消息（群聊，乐观更新）
@@ -1721,8 +1792,16 @@ export default function App() {
           ...prev,
           [groupId]: (prev[groupId] || []).filter(m => m.id !== tempMsg.id),
         }));
+        adminToastFn(res.msg || '发送失败');
       }
-    } catch {}
+    } catch {
+      // 网络异常：移除乐观消息并提示
+      setGroupMessages(prev => ({
+        ...prev,
+        [groupId]: (prev[groupId] || []).filter(m => m.id !== tempMsg.id),
+      }));
+      adminToastFn('网络异常，发送失败');
+    }
   };
 
   const handleLeaveGroup = async (groupId: number) => {
@@ -1931,8 +2010,8 @@ export default function App() {
       if (!user) return;
       const allFriends = friendsRef.current;
       const activeId = activeConvIdRef.current;
-      // 本轮开始时间：用于 changedAfter 增量同步（撤回/已读/删除的旧消息变更）
-      const pollStartedAt = Date.now();
+      // 变更同步基准：上一轮响应的 serverTime（服务器时钟，客户端时钟偏差也不会丢变更）
+      const changedSince = lastServerTimeRef.current;
 
       // 拉取所有好友的新消息（新消息 + 变更同步）
       const allFriendIds = allFriends.map(f => f.id);
@@ -1941,8 +2020,11 @@ export default function App() {
         const afterId = lastMsgIdRef.current[peerId] || 0;
 
         try {
-          const res = await apiGet(`/messages?peerId=${peerId}&after=${afterId}&changedAfter=${pollStartedAt}`, user.id);
+          const res = await apiGet(`/messages?peerId=${peerId}&after=${afterId}&changedAfter=${changedSince}`, user.id);
           if (res.ok) {
+            if (res.serverTime && res.serverTime > lastServerTimeRef.current) {
+              lastServerTimeRef.current = res.serverTime;
+            }
             const mapMsg = (m: any): ChatMessage => ({
               id: `server-${m.id}`,
               senderId: m.senderId,
@@ -2009,7 +2091,7 @@ export default function App() {
                     ...c,
                     messages: [...c.messages, ...uniqueNew],
                     lastMessage: { content: latestMsg.content, timestamp: latestMsg.timestamp },
-                    unread: isOtherActive ? c.unread : c.unread + uniqueNew.filter(m => m.senderId !== user.id).length,
+                    unread: isOtherActive ? c.unread : c.unread + uniqueNew.filter(m => m.senderId !== user.id && !m.read).length,
                   };
                 });
               } else {
@@ -2022,7 +2104,7 @@ export default function App() {
                     peerName: friendUser.username,
                     peerColor: pickColor(peerId),
                     messages: newMsgs,
-                    unread: newMsgs.filter(m => m.senderId !== user.id).length,
+                    unread: newMsgs.filter(m => m.senderId !== user.id && !m.read).length,
                     lastMessage: { content: latestMsg.content, timestamp: latestMsg.timestamp },
                   };
                   return [newConv, ...prev];
@@ -2040,8 +2122,11 @@ export default function App() {
       for (const group of allGroups) {
         const afterId = lastGroupMsgIdRef.current[group.id] || 0;
         try {
-          const res = await apiGet(`/groups/${group.id}/messages?after=${afterId}&changedAfter=${pollStartedAt}`, user.id);
+          const res = await apiGet(`/groups/${group.id}/messages?after=${afterId}&changedAfter=${changedSince}`, user.id);
           if (res.ok) {
+            if (res.serverTime && res.serverTime > lastServerTimeRef.current) {
+              lastServerTimeRef.current = res.serverTime;
+            }
             const mapGMsg = (m: any): GroupMessage => ({
               id: m.id,
               groupId: m.groupId,
@@ -2109,7 +2194,13 @@ export default function App() {
   const getOrCreateConv = (peerId: number, peerName: string) => {
     const existing = conversations.find(c => c.peerId === peerId);
     setActiveGroupId(null);
-    if (existing) { setActiveConvId(existing.id); setActiveView('chats'); return; }
+    if (existing) {
+      setActiveConvId(existing.id);
+      // 从好友列表/搜索结果进入也要清未读
+      setConversations(prev => prev.map(c => (c.id === existing.id ? { ...c, unread: 0 } : c)));
+      setActiveView('chats');
+      return;
+    }
     const newConv: Conversation = {
       id: `conv-${Date.now()}`,
       peerId, peerName,
@@ -2147,17 +2238,15 @@ export default function App() {
       if (res.ok) {
         // 用后端返回的真实 id 替换临时 id
         const serverMsg = res.message;
+        // 替换乐观消息为服务端 id，并按 id 去重（轮询可能已先拉到同一条）
         setConversations(prev => prev.map(c => {
           if (c.id !== convId) return c;
-          return {
-            ...c,
-            messages: c.messages.map(m =>
-              m.id === msg.id ? { ...m, id: `server-${serverMsg.id}` } : m
-            ),
-          };
+          const replaced = c.messages.map(m => (m.id === msg.id ? { ...m, id: `server-${serverMsg.id}` } : m));
+          const seen = new Set<string>();
+          const unique = replaced.filter(m => (seen.has(m.id) ? false : (seen.add(m.id), true)));
+          return { ...c, messages: unique };
         }));
-        // 记录最新消息 id
-        setLastMsgId(prev => ({ ...prev, [conv.peerId]: serverMsg.id }));
+        // 不覆盖 lastMsgId：由轮询自然推进，避免跳过对方更早发出、尚未拉到的消息
         // 刷新好友列表以更新 confirmed 状态
         apiGet('/friends').then((res: { ok: boolean; friends: ChatUser[] }) => {
           if (res.ok) setFriends(res.friends);
@@ -2379,6 +2468,8 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* 全局提示：任何视图都能看到（上传失败/被拉黑/撤回失败等） */}
+      {adminToast && <div className="admin-toast">{adminToast}</div>}
       {/* Sidebar */}
       <nav className="sidebar">
         <button className={`sidebar-icon ${activeView === 'chats' ? 'active' : ''}`} onClick={() => { setActiveGroupId(null); setActiveView('chats'); }}>
@@ -2718,8 +2809,6 @@ export default function App() {
             <div className="panel-header" style={{display:'flex',alignItems:'center',gap:'8px'}}>
               <Shield size={20} /> 管理后台
             </div>
-
-            {adminToast && <div className="admin-toast">{adminToast}</div>}
 
             {/* Stats */}
             {adminStats && (
