@@ -3270,7 +3270,8 @@ export default function App() {
                 const canDisable = !isSelf && !(isSuper && !isSuperAdminUser);
                 const canResetPwd = !isSelf;
                 const canSetAdmin = !isSelf && !isSuper;
-                const canSuperToggle = !isSelf && (!isSuper || isSuperAdminUser);
+                // 超级管理员身份（设为/取消）只有超级管理员能操作
+                const canSuperToggle = isSuperAdminUser && !isSelf;
                 return (
                 <div key={u.id} className={`admin-user-card ${u.disabled ? 'disabled' : ''}`}>
                   <div className="admin-user-info">

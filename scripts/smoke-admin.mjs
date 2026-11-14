@@ -70,15 +70,19 @@ r = await req('POST', `/api/admin/users/${ord2.id}/set-admin`, { token: ord.toke
 check('普通管理员可取消管理员', r.data?.ok === true && r.data.role === 'user', r.data?.msg);
 r = await req('POST', `/api/admin/users/${ord2.id}/set-admin`, { token: ord.token, body: {} });
 check('普通管理员可恢复管理员', r.data?.ok === true && r.data.role === 'admin', r.data?.msg);
-// 3) 可以设为超级管理员，但不能罢免超级管理员
+// 3) 普通管理员不能设置超级管理员（设为/取消都只能超管操作）
 r = await req('POST', `/api/admin/users/${ord2.id}/set-super`, { token: ord.token, body: {} });
-check('普通管理员可设超级管理员', r.data?.ok === true && r.data.role === 'superadmin', r.data?.msg);
+check('普通管理员不能设超级管理员', r.data?.ok === false && r.data.msg.includes('只有超级管理员'), r.data?.msg);
+// 4) 超级管理员可以设置
+r = await req('POST', `/api/admin/users/${ord2.id}/set-super`, { token: sup.token, body: {} });
+check('超级管理员可设超级管理员', r.data?.ok === true && r.data.role === 'superadmin', r.data?.msg);
+// 5) 普通管理员不能罢免超级管理员
 r = await req('POST', `/api/admin/users/${ord2.id}/set-super`, { token: ord.token, body: {} });
-check('普通管理员不能罢免超级管理员', r.data?.ok === false && r.data.msg.includes('罢免'), r.data?.msg);
-// 4) 普通管理员不能禁用超级管理员
+check('普通管理员不能罢免超级管理员', r.data?.ok === false && r.data.msg.includes('只有超级管理员'), r.data?.msg);
+// 6) 普通管理员不能禁用超级管理员
 r = await req('POST', `/api/admin/users/${ord2.id}/disable`, { token: ord.token, body: {} });
 check('普通管理员不能禁用超级管理员', r.data?.ok === false && r.data.msg.includes('罢免'), r.data?.msg);
-// 5) 超级管理员可以罢免
+// 7) 超级管理员可以罢免
 r = await req('POST', `/api/admin/users/${ord2.id}/set-super`, { token: sup.token, body: {} });
 check('超级管理员可罢免超级管理员', r.data?.ok === true && r.data.role === 'admin', r.data?.msg);
 

@@ -948,11 +948,11 @@ app.post('/api/admin/users/:targetId/set-admin', (req, res) => {
   res.json({ ok: true, msg: newRole === ROLE_ADMIN ? '已设为管理员' : '已取消管理员', role: newRole });
 });
 
-// 设置/取消超级管理员：设为超级管理员所有管理员可用；罢免超级管理员仅超级管理员可用
+// 设置/取消超级管理员：仅超级管理员可操作（普通管理员既不能设超管也不能罢免超管）
 app.post('/api/admin/users/:targetId/set-super', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
   const targetId = parseInt(req.params.targetId);
-  if (!userId || !isAdmin(userId)) return res.json({ ok: false, msg: '无权限' });
+  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以设置超级管理员' });
 
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
@@ -960,8 +960,7 @@ app.post('/api/admin/users/:targetId/set-super', (req, res) => {
   if (targetId === userId) return res.json({ ok: false, msg: '不能修改自己的超级管理员身份' });
 
   if (target.role === ROLE_SUPER) {
-    // 罢免超级管理员：仅超级管理员可操作，且需保留至少一个
-    if (!isSuperAdmin(userId)) return res.json({ ok: false, msg: '普通管理员不能罢免超级管理员' });
+    // 取消超级管理员：需保留至少一个
     const superCount = users.filter(u => u.role === ROLE_SUPER).length;
     if (superCount <= 1) return res.json({ ok: false, msg: '至少需要保留一个超级管理员' });
     target.role = ROLE_ADMIN;
