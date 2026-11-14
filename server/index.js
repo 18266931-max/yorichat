@@ -30,6 +30,7 @@ const GROUPS_FILE = join(DATA_DIR, 'groups.json');
 const GROUP_MEMBERS_FILE = join(DATA_DIR, 'group_members.json');
 const GROUP_MESSAGES_FILE = join(DATA_DIR, 'group_messages.json');
 const CONV_SETTINGS_FILE = join(DATA_DIR, 'conv_settings.json');
+const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
 const COUNTER_FILE = join(DATA_DIR, 'counter.json');
 
 /* ─── 单调递增 ID 计数器 ───
@@ -103,6 +104,19 @@ app.use('/uploads', (req, res, next) => {
   }
   next();
 }, express.static(UPLOADS_DIR));
+
+// 站点设置（公告 / 注册开关），默认值兜底
+function readSettings() {
+  const raw = readJSON(SETTINGS_FILE);
+  const data = (raw && !Array.isArray(raw) && typeof raw === 'object') ? raw : {};
+  return {
+    announcement: typeof data.announcement === 'string' ? data.announcement : '',
+    registrationOpen: data.registrationOpen !== false,
+  };
+}
+function writeSettings(next) {
+  writeJSON(SETTINGS_FILE, next);
+}
 
 // 税率：卖家获得 80%
 const SELLER_RATE = 0.8;
@@ -241,6 +255,7 @@ app.use((req, res, next) => {
     || (method === 'GET' && (
       p === '/health'
       || p === '/version'
+      || p === '/settings'
       || p === '/categories'
       || p === '/market'
       || /^\/ratings\/\d+$/.test(p)
@@ -326,6 +341,10 @@ app.post('/api/register', (req, res) => {
   if (typeof password !== 'string' || password.length < 6) return res.json({ ok: false, msg: '密码至少6个字符' });
 
   users = readJSON(USERS_FILE);
+  // 注册开关（首个用户始终允许，避免把系统锁死）
+  if (users.length > 0 && !readSettings().registrationOpen) {
+    return res.json({ ok: false, msg: '管理员已关闭注册，请联系管理员' });
+  }
   if (users.find(u => u.username === username.trim())) {
     return res.json({ ok: false, msg: '用户名已存在' });
   }
@@ -442,12 +461,12 @@ function attachReplyPreview(messages, sourceMessages) {
   const withReply = messages.some(m => m.replyToId);
   if (!withReply) return messages;
   const byId = new Map(sourceMessages.map(m => [m.id, m]));
-  users = readJSON(USERS_FILE);
+  const userList = readJSON(USERS_FILE);
   return messages.map(m => {
     if (!m.replyToId) return m;
     const replied = byId.get(m.replyToId);
     if (!replied) return { ...m, replyTo: null };
-    const sender = users.find(u => u.id === replied.senderId);
+    const sender = userList.find(u => u.id === replied.senderId);
     return {
       ...m,
       replyTo: {
@@ -817,14 +836,15 @@ const ROLE_SUPER = 'superadmin';
 const ROLE_ADMIN = 'admin';
 
 function isAdmin(userId) {
-  users = readJSON(USERS_FILE);
-  const user = users.find(u => u.id === userId);
+  // 注意：这里不能用全局 users 变量（会被重新赋值，覆盖调用方刚做的修改）
+  const list = readJSON(USERS_FILE);
+  const user = list.find(u => u.id === userId);
   return !!user && (user.role === ROLE_ADMIN || user.role === ROLE_SUPER);
 }
 
 function isSuperAdmin(userId) {
-  users = readJSON(USERS_FILE);
-  const user = users.find(u => u.id === userId);
+  const list = readJSON(USERS_FILE);
+  const user = list.find(u => u.id === userId);
   return !!user && user.role === ROLE_SUPER;
 }
 
@@ -869,9 +889,11 @@ app.post('/api/admin/users/:targetId/disable', (req, res) => {
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
-  if (target.role === ROLE_SUPER) return res.json({ ok: false, msg: '不能注销超级管理员账号' });
-  if (target.role === ROLE_ADMIN && !isSuperAdmin(userId)) {
-    return res.json({ ok: false, msg: '普通管理员不能操作管理员账号，请联系超级管理员' });
+  // 只有超级管理员可以罢免/禁用超级管理员账号
+  if (target.role === ROLE_SUPER) {
+    if (!isSuperAdmin(userId)) return res.json({ ok: false, msg: '普通管理员不能罢免超级管理员' });
+    const superCount = users.filter(u => u.role === ROLE_SUPER).length;
+    if (superCount <= 1) return res.json({ ok: false, msg: '至少需要保留一个超级管理员' });
   }
 
   target.disabled = true;
@@ -899,10 +921,6 @@ app.post('/api/admin/users/:targetId/enable', (req, res) => {
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
-  if (target.role === ROLE_SUPER) return res.json({ ok: false, msg: '不能操作超级管理员账号' });
-  if (target.role === ROLE_ADMIN && !isSuperAdmin(userId)) {
-    return res.json({ ok: false, msg: '普通管理员不能操作管理员账号，请联系超级管理员' });
-  }
 
   target.disabled = false;
   target.role = target.role || 'user';
@@ -910,17 +928,17 @@ app.post('/api/admin/users/:targetId/enable', (req, res) => {
   res.json({ ok: true, msg: '已启用用户 ' + target.username });
 });
 
-// 设置/取消普通管理员（仅超级管理员）
+// 设置/取消普通管理员（管理员均可）
 app.post('/api/admin/users/:targetId/set-admin', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
   const targetId = parseInt(req.params.targetId);
-  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以修改他人身份' });
+  if (!userId || !isAdmin(userId)) return res.json({ ok: false, msg: '无权限' });
 
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
   if (targetId === userId) return res.json({ ok: false, msg: '不能修改自己的身份' });
-  if (target.role === ROLE_SUPER) return res.json({ ok: false, msg: '请使用"设为超级管理员"来调整超级管理员' });
+  if (target.role === ROLE_SUPER) return res.json({ ok: false, msg: '请使用"超级管理员"操作来调整超级管理员' });
 
   const newRole = target.role === ROLE_ADMIN ? 'user' : ROLE_ADMIN;
   target.role = newRole;
@@ -930,11 +948,11 @@ app.post('/api/admin/users/:targetId/set-admin', (req, res) => {
   res.json({ ok: true, msg: newRole === ROLE_ADMIN ? '已设为管理员' : '已取消管理员', role: newRole });
 });
 
-// 设置/取消超级管理员（仅超级管理员；至少保留一个超级管理员）
+// 设置/取消超级管理员：设为超级管理员所有管理员可用；罢免超级管理员仅超级管理员可用
 app.post('/api/admin/users/:targetId/set-super', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
   const targetId = parseInt(req.params.targetId);
-  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以操作' });
+  if (!userId || !isAdmin(userId)) return res.json({ ok: false, msg: '无权限' });
 
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
@@ -942,7 +960,8 @@ app.post('/api/admin/users/:targetId/set-super', (req, res) => {
   if (targetId === userId) return res.json({ ok: false, msg: '不能修改自己的超级管理员身份' });
 
   if (target.role === ROLE_SUPER) {
-    // 降级为普通管理员前，确保还有别的超级管理员
+    // 罢免超级管理员：仅超级管理员可操作，且需保留至少一个
+    if (!isSuperAdmin(userId)) return res.json({ ok: false, msg: '普通管理员不能罢免超级管理员' });
     const superCount = users.filter(u => u.role === ROLE_SUPER).length;
     if (superCount <= 1) return res.json({ ok: false, msg: '至少需要保留一个超级管理员' });
     target.role = ROLE_ADMIN;
@@ -956,7 +975,7 @@ app.post('/api/admin/users/:targetId/set-super', (req, res) => {
   res.json({ ok: true, msg: `已将 ${target.username} 设为超级管理员`, role: ROLE_SUPER });
 });
 
-// 重置用户密码（管理员；超级管理员可重置管理员）
+// 重置用户密码（管理员；重置超级管理员密码仅超级管理员可用）
 app.post('/api/admin/users/:targetId/reset-password', (req, res) => {
   const userId = parseInt(req.headers['x-user-id']) || 0;
   const targetId = parseInt(req.params.targetId);
@@ -970,10 +989,6 @@ app.post('/api/admin/users/:targetId/reset-password', (req, res) => {
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
-  if (target.role === ROLE_SUPER) return res.json({ ok: false, msg: '不能重置超级管理员的密码' });
-  if (target.role === ROLE_ADMIN && !isSuperAdmin(userId)) {
-    return res.json({ ok: false, msg: '普通管理员不能重置管理员密码，请联系超级管理员' });
-  }
 
   target.password = hashPassword(newPassword);
   writeJSON(USERS_FILE, users);
@@ -1005,6 +1020,8 @@ app.get('/api/admin/stats', (req, res) => {
   users = readJSON(USERS_FILE);
   const messages = readJSON(MESSAGES_FILE);
   const friends = readJSON(FRIENDS_FILE);
+  const groups = readJSON(GROUPS_FILE);
+  const settings = readSettings();
 
   res.json({
     ok: true,
@@ -1015,9 +1032,121 @@ app.get('/api/admin/stats', (req, res) => {
       adminCount: users.filter(u => u.role === ROLE_ADMIN || u.role === ROLE_SUPER).length,
       superAdminCount: users.filter(u => u.role === ROLE_SUPER).length,
       totalMessages: messages.length,
+      totalGroups: groups.length,
       totalFriendships: new Set(friends.map(f => `${Math.min(f.userId, f.friendId)}-${Math.max(f.userId, f.friendId)}`)).size,
+      announcement: settings.announcement,
+      registrationOpen: settings.registrationOpen,
     },
   });
+});
+
+// 站点设置（公开：公告 + 注册开关）
+app.get('/api/settings', (req, res) => {
+  const s = readSettings();
+  res.json({ ok: true, announcement: s.announcement, registrationOpen: s.registrationOpen });
+});
+
+// 修改站点设置（仅超级管理员）
+app.post('/api/admin/settings', (req, res) => {
+  const userId = parseInt(req.headers['x-user-id']) || 0;
+  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以修改系统设置' });
+
+  const { announcement, registrationOpen } = req.body;
+  if (announcement !== undefined && (typeof announcement !== 'string' || announcement.length > 300)) {
+    return res.json({ ok: false, msg: '公告不能超过300字' });
+  }
+  if (registrationOpen !== undefined && typeof registrationOpen !== 'boolean') {
+    return res.json({ ok: false, msg: '注册开关参数无效' });
+  }
+
+  const next = readSettings();
+  if (announcement !== undefined) next.announcement = announcement.trim();
+  if (registrationOpen !== undefined) next.registrationOpen = registrationOpen;
+  writeSettings(next);
+  res.json({ ok: true, msg: '系统设置已保存', announcement: next.announcement, registrationOpen: next.registrationOpen });
+});
+
+// 群聊管理：列出所有群（管理员）
+app.get('/api/admin/groups', (req, res) => {
+  const userId = parseInt(req.query.userId) || 0;
+  if (!userId || !isAdmin(userId)) return res.json({ ok: false, msg: '无权限' });
+
+  const groups = readJSON(GROUPS_FILE);
+  const members = readJSON(GROUP_MEMBERS_FILE);
+  const groupMessages = readJSON(GROUP_MESSAGES_FILE);
+  users = readJSON(USERS_FILE);
+
+  const list = groups.map(g => {
+    const gMembers = members.filter(m => m.groupId === g.id);
+    const owner = gMembers.find(m => m.role === 'owner');
+    const ownerUser = owner ? users.find(u => u.id === owner.userId) : null;
+    return {
+      id: g.id,
+      name: g.name,
+      memberCount: gMembers.length,
+      messageCount: groupMessages.filter(m => m.groupId === g.id && !m.deleted).length,
+      ownerId: owner ? owner.userId : null,
+      ownerName: ownerUser ? (ownerUser.nickname || ownerUser.username) : '未知',
+      createdAt: g.createdAt || null,
+    };
+  }).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  res.json({ ok: true, groups: list });
+});
+
+// 解散群聊（管理员）：删除群、成员关系、群消息（需输入群名确认，防误删）
+app.post('/api/admin/groups/:groupId/dissolve', (req, res) => {
+  const userId = parseInt(req.headers['x-user-id']) || 0;
+  const groupId = parseInt(req.params.groupId);
+  if (!userId || !isAdmin(userId)) return res.json({ ok: false, msg: '无权限' });
+  if (!groupId) return res.json({ ok: false, msg: '缺少群聊ID' });
+
+  const groups = readJSON(GROUPS_FILE);
+  const group = groups.find(g => g.id === groupId);
+  if (!group) return res.json({ ok: false, msg: '群聊不存在' });
+
+  const confirmName = typeof req.body?.confirmName === 'string' ? req.body.confirmName.trim() : '';
+  if (confirmName !== group.name) {
+    return res.json({ ok: false, msg: '请输入正确的群名以确认解散' });
+  }
+
+  writeJSON(GROUPS_FILE, groups.filter(g => g.id !== groupId));
+  writeJSON(GROUP_MEMBERS_FILE, readJSON(GROUP_MEMBERS_FILE).filter(m => m.groupId !== groupId));
+  writeJSON(GROUP_MESSAGES_FILE, readJSON(GROUP_MESSAGES_FILE).filter(m => m.groupId !== groupId));
+  res.json({ ok: true, msg: `已解散群聊「${group.name}」` });
+});
+
+// 数据备份导出（仅超级管理员）
+app.get('/api/admin/backup', (req, res) => {
+  const userId = parseInt(req.query.userId) || 0;
+  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以导出备份' });
+
+  const files = {
+    users: USERS_FILE,
+    friends: FRIENDS_FILE,
+    messages: MESSAGES_FILE,
+    group_members: GROUP_MEMBERS_FILE,
+    group_messages: GROUP_MESSAGES_FILE,
+    groups: GROUPS_FILE,
+    items: ITEMS_FILE,
+    orders: ORDERS_FILE,
+    cart: CART_FILE,
+    ratings: RATINGS_FILE,
+    transfers: TRANSFERS_FILE,
+    categories: CATEGORIES_FILE,
+    redpackets: REDPACKETS_FILE,
+    conv_settings: CONV_SETTINGS_FILE,
+    settings: SETTINGS_FILE,
+  };
+  const data = {};
+  for (const [key, file] of Object.entries(files)) {
+    if (key === 'settings') data[key] = readSettings();
+    else data[key] = readJSON(file);
+  }
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="tangchat-backup-${stamp}.json"`);
+  res.send(JSON.stringify({ exportedAt: new Date().toISOString(), data }, null, 2));
 });
 
 // ─── User status check API ───
@@ -1059,10 +1188,6 @@ app.post('/api/admin/users/:targetId/credits', (req, res) => {
   users = readJSON(USERS_FILE);
   const target = users.find(u => u.id === targetId);
   if (!target) return res.json({ ok: false, msg: '用户不存在' });
-  if (target.role === ROLE_SUPER) return res.json({ ok: false, msg: '不能调整超级管理员的积分' });
-  if (target.role === ROLE_ADMIN && !isSuperAdmin(userId)) {
-    return res.json({ ok: false, msg: '普通管理员不能调整管理员积分，请联系超级管理员' });
-  }
 
   target.credits = Math.max(0, (target.credits || 0) + numAmount);
   writeJSON(USERS_FILE, users);

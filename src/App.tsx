@@ -4,7 +4,7 @@ import {
   UserPlus, Search, Shield, Ban, RotateCcw, Trash2, UserCheck, UserX,
   Mic, ShoppingBag, Package, ShoppingCart, Plus, X, Coins,
   Star, ArrowRightLeft, Edit3, Heart, Gift, Check, Reply,
-  Image as ImageIcon, Paperclip, FileText, Pin, Bell, BellOff, Download, Crown
+  Image as ImageIcon, Paperclip, FileText, Pin, Bell, BellOff, Download, Crown, Megaphone
 } from 'lucide-react';
 
 // 由 vite define 注入的构建时间（用于确认页面是否最新）
@@ -58,8 +58,22 @@ interface ServerStats {
   activeUsers: number;
   disabledUsers: number;
   adminCount: number;
+  superAdminCount?: number;
   totalMessages: number;
+  totalGroups?: number;
   totalFriendships: number;
+  announcement?: string;
+  registrationOpen?: boolean;
+}
+
+interface AdminGroup {
+  id: number;
+  name: string;
+  memberCount: number;
+  messageCount: number;
+  ownerId: number | null;
+  ownerName: string;
+  createdAt: number | null;
 }
 
 interface Category {
@@ -1103,6 +1117,13 @@ export default function App() {
   // Admin state
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [adminStats, setAdminStats] = useState<ServerStats | null>(null);
+  // 群聊管理 / 系统设置
+  const [adminGroups, setAdminGroups] = useState<AdminGroup[]>([]);
+  const [systemForm, setSystemForm] = useState({ announcement: '', registrationOpen: true });
+  const [systemSaving, setSystemSaving] = useState(false);
+  // 全站公告横幅
+  const [announcement, setAnnouncement] = useState('');
+  const [announcementDismissed, setAnnouncementDismissed] = useState(false);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminToast, setAdminToast] = useState('');
   const [resetPwdTarget, setResetPwdTarget] = useState<number | null>(null);
@@ -1275,6 +1296,112 @@ export default function App() {
   const isAdminUser = currentUser?.role === 'admin' || currentUser?.role === 'superadmin';
   const isSuperAdminUser = currentUser?.role === 'superadmin';
 
+  // ─── 全站公告 ───
+  const loadAnnouncement = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/settings`, { cache: 'no-store' });
+      const data = await res.json();
+      if (data.ok && data.announcement) {
+        setAnnouncement(data.announcement);
+        const dismissed = localStorage.getItem('purechat_announcement_dismissed');
+        setAnnouncementDismissed(dismissed === data.announcement);
+      } else {
+        setAnnouncement('');
+      }
+    } catch { /* 忽略 */ }
+  }, []);
+
+  const dismissAnnouncement = () => {
+    setAnnouncementDismissed(true);
+    try { localStorage.setItem('purechat_announcement_dismissed', announcement); } catch {}
+  };
+
+  useEffect(() => { loadAnnouncement(); }, [loadAnnouncement, currentUser]);
+
+  // 群聊管理
+  const loadAdminGroups = useCallback(async () => {
+    if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'superadmin')) return;
+    try {
+      const res = await apiGet('/admin/groups', currentUser.id);
+      if (res.ok) setAdminGroups(res.groups || []);
+    } catch { /* 忽略 */ }
+  }, [currentUser]);
+
+  const handleDissolveGroup = async (group: AdminGroup) => {
+    if (!currentUser) return;
+    // 二次确认：必须输入群名，防止误点导致不可恢复的删除
+    const typed = prompt(
+      `解散后不可恢复！群内 ${group.memberCount} 名成员和 ${group.messageCount} 条消息都会被删除。\n\n请输入群名「${group.name}」以确认：`
+    );
+    if (typed === null) return;
+    if (typed.trim() !== group.name) {
+      adminToastFn('群名不一致，已取消解散');
+      return;
+    }
+    const res = await apiPost(`/admin/groups/${group.id}/dissolve`, { confirmName: group.name }, currentUser.id);
+    if (res.ok) {
+      adminToastFn(res.msg || '已解散');
+      loadAdminGroups();
+      loadAdminData();
+    } else {
+      adminToastFn(res.msg || '解散失败');
+    }
+  };
+
+  // 系统设置（超级管理员）
+  const loadSystemForm = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/settings`, { cache: 'no-store' });
+      const data = await res.json();
+      if (data.ok) {
+        setSystemForm({
+          announcement: data.announcement || '',
+          registrationOpen: data.registrationOpen !== false,
+        });
+      }
+    } catch { /* 忽略 */ }
+  }, []);
+
+  const handleSaveSystem = async () => {
+    if (!currentUser || !isSuperAdminUser) return;
+    setSystemSaving(true);
+    try {
+      const res = await apiPost('/admin/settings', {
+        announcement: systemForm.announcement,
+        registrationOpen: systemForm.registrationOpen,
+      }, currentUser.id);
+      if (res.ok) {
+        adminToastFn(res.msg || '已保存');
+        loadAnnouncement();
+      } else {
+        adminToastFn(res.msg || '保存失败');
+      }
+    } catch {
+      adminToastFn('保存失败');
+    }
+    setSystemSaving(false);
+  };
+
+  const handleDownloadBackup = async () => {
+    if (!currentUser || !isSuperAdminUser) return;
+    try {
+      const res = await fetch(`${API}/admin/backup?userId=${currentUser.id}`, { headers: authHeaders() });
+      if (!res.ok) { adminToastFn('导出失败'); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `tangchat-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      adminToastFn('备份已开始下载');
+    } catch {
+      adminToastFn('导出失败');
+    }
+  };
+
   const loadAdminData = useCallback(async () => {
     if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'superadmin')) return;
     setAdminLoading(true);
@@ -1303,7 +1430,11 @@ export default function App() {
 
   useEffect(() => {
     if (!currentUser) return;
-    if (activeView === 'admin') loadAdminData();
+    if (activeView === 'admin') {
+      loadAdminData();
+      loadAdminGroups();
+      loadSystemForm();
+    }
     if (activeView === 'market') {
       apiGet('/user/credits', currentUser!.id).then((res: { ok: boolean; credits: number }) => {
         if (res.ok) setCredits(res.credits);
@@ -2648,6 +2779,14 @@ export default function App() {
     <div className="app">
       {/* 全局提示：任何视图都能看到（上传失败/被拉黑/撤回失败等） */}
       {adminToast && <div className="admin-toast">{adminToast}</div>}
+      {/* 全站公告 */}
+      {announcement && !announcementDismissed && (
+        <div className="announcement-bar">
+          <Megaphone size={15} />
+          <span className="announcement-text">{announcement}</span>
+          <button className="announcement-close" title="关闭公告" onClick={dismissAnnouncement}><X size={14} /></button>
+        </div>
+      )}
       {/* Sidebar */}
       <nav className="sidebar">
         <button className={`sidebar-icon ${activeView === 'chats' ? 'active' : ''}`} onClick={() => { setActiveGroupId(null); setActiveView('chats'); }}>
@@ -3031,6 +3170,10 @@ export default function App() {
                   <div className="stat-value">{adminStats.totalMessages}</div>
                   <div className="stat-label">消息</div>
                 </div>
+                <div className="stat-card">
+                  <div className="stat-value">{adminStats.totalGroups || 0}</div>
+                  <div className="stat-label">群聊</div>
+                </div>
               </div>
             )}
 
@@ -3051,11 +3194,11 @@ export default function App() {
                 const isSuper = u.role === 'superadmin';
                 const isOrdAdmin = u.role === 'admin';
                 const isSelf = u.id === currentUser?.id;
-                // 权限：普通管理员只能管理普通用户；超级管理员可管理管理员
-                const canManage = isSelf ? false
-                  : isSuper ? false
-                  : isOrdAdmin ? isSuperAdminUser
-                  : true;
+                // 规则：管理员都可以管理他人；唯一例外——普通管理员不能罢免/禁用超级管理员
+                const canDisable = !isSelf && !(isSuper && !isSuperAdminUser);
+                const canResetPwd = !isSelf;
+                const canSetAdmin = !isSelf && !isSuper;
+                const canSuperToggle = !isSelf && (!isSuper || isSuperAdminUser);
                 return (
                 <div key={u.id} className={`admin-user-card ${u.disabled ? 'disabled' : ''}`}>
                   <div className="admin-user-info">
@@ -3073,18 +3216,17 @@ export default function App() {
                     </div>
                   </div>
                   <div className="admin-user-actions">
-                    {canManage && u.disabled && (
+                    {canDisable && u.disabled && (
                       <button className="admin-btn enable" onClick={() => handleEnableUser(u.id)} title="启用">
                         <UserCheck size={16} />
                       </button>
                     )}
-                    {canManage && !u.disabled && (
+                    {canDisable && !u.disabled && (
                       <button className="admin-btn disable" onClick={() => handleDisableUser(u.id)} title="注销">
                         <UserX size={16} />
                       </button>
                     )}
-                    {/* 身份变更：仅超级管理员 */}
-                    {isSuperAdminUser && !isSelf && !isSuper && (
+                    {canSetAdmin && (
                       <button
                         className={`admin-btn ${isOrdAdmin ? 'remove-admin' : 'make-admin'}`}
                         onClick={() => handleToggleAdmin(u.id)}
@@ -3093,21 +3235,21 @@ export default function App() {
                         <Shield size={16} />
                       </button>
                     )}
-                    {isSuperAdminUser && !isSelf && (
+                    {canSuperToggle && (
                       <button
                         className={`admin-btn ${isSuper ? 'remove-super' : 'make-super'}`}
                         onClick={() => handleToggleSuperAdmin(u.id, u.username, isSuper)}
-                        title={isSuper ? '取消超级管理员' : '设为超级管理员'}
+                        title={isSuper ? '取消超级管理员（罢免）' : '设为超级管理员'}
                       >
                         <Crown size={16} />
                       </button>
                     )}
-                    {canManage && (
+                    {canResetPwd && (
                       <button className="admin-btn reset-pwd" onClick={() => { setResetPwdTarget(resetPwdTarget === u.id ? null : u.id); setResetPwdValue(''); setCreditTarget(null); }} title="重置密码">
                         <RotateCcw size={16} />
                       </button>
                     )}
-                    {canManage && (
+                    {!isSelf && (
                       <button className="admin-btn credit-btn" onClick={() => { setCreditTarget(creditTarget === u.id ? null : u.id); setCreditValue(''); setResetPwdTarget(null); }} title="调整积分">
                         <Coins size={16} />
                       </button>
@@ -3144,6 +3286,65 @@ export default function App() {
                 );
               })}
             </div>
+
+            {/* ── 群聊管理 ── */}
+            <div className="admin-section">
+              <div className="admin-section-title">
+                <Users size={16} /> 群聊管理
+                <span className="admin-section-sub">共 {adminGroups.length} 个群</span>
+                <button className="admin-link-btn" onClick={loadAdminGroups}>刷新</button>
+              </div>
+              {adminGroups.length === 0 && <div className="admin-empty">暂无群聊</div>}
+              {adminGroups.map(g => (
+                <div key={g.id} className="admin-group-row">
+                  <div className="admin-group-main">
+                    <div className="admin-group-name">{g.name}</div>
+                    <div className="admin-group-meta">
+                      群主：{g.ownerName} · 成员 {g.memberCount} · 消息 {g.messageCount}
+                    </div>
+                  </div>
+                  <button
+                    className="admin-btn disable"
+                    title="解散群聊"
+                    onClick={() => handleDissolveGroup(g)}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* ── 系统设置（仅超级管理员） ── */}
+            {isSuperAdminUser && (
+              <div className="admin-section">
+                <div className="admin-section-title">
+                  <Settings size={16} /> 系统设置
+                  <span className="admin-section-sub">仅超级管理员可见</span>
+                </div>
+                <label className="market-label">全站公告（显示在所有用户页面顶部，留空关闭）</label>
+                <textarea
+                  className="market-textarea"
+                  rows={2}
+                  placeholder="例如：今晚 22:00 系统维护，请提前保存消息"
+                  value={systemForm.announcement}
+                  onChange={e => setSystemForm(f => ({ ...f, announcement: e.target.value }))}
+                />
+                <label className="admin-switch-row">
+                  <input
+                    type="checkbox"
+                    checked={systemForm.registrationOpen}
+                    onChange={e => setSystemForm(f => ({ ...f, registrationOpen: e.target.checked }))}
+                  />
+                  <span>允许新用户注册（关闭后只有管理员能开通账号）</span>
+                </label>
+                <div className="admin-system-actions">
+                  <button className="modal-btn confirm" onClick={handleSaveSystem} disabled={systemSaving}>
+                    {systemSaving ? '保存中...' : '保存设置'}
+                  </button>
+                  <button className="modal-btn cancel" onClick={handleDownloadBackup}>下载数据备份</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

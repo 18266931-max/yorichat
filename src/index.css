@@ -847,6 +847,131 @@ button:disabled:active { transform: none; }
   display: block;
 }
 
+/* 全站公告横幅 */
+.announcement-bar {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  max-width: min(720px, calc(100vw - 32px));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #fff7e0, #ffe9b8);
+  border: 1px solid #ffd98a;
+  color: #7a4a00;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 10px 30px rgba(160, 110, 0, 0.18);
+  animation: modalIn 0.3s var(--ease);
+}
+.announcement-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 4.8em;
+  overflow-y: auto;
+}
+.announcement-close {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(122, 74, 0, 0.12);
+  color: #7a4a00;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.announcement-close:hover { background: rgba(122, 74, 0, 0.22); }
+
+/* 管理后台分区 */
+.admin-section {
+  margin: 16px 20px 8px;
+  padding: 16px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.admin-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--ink);
+  margin-bottom: 12px;
+}
+.admin-section-sub {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.admin-link-btn {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--brand-2);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+.admin-link-btn:hover { background: var(--brand-soft); }
+.admin-empty {
+  font-size: 13px;
+  color: var(--ink-3);
+  padding: 10px 0;
+}
+.admin-group-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  margin-bottom: 8px;
+}
+.admin-group-main { min-width: 0; flex: 1; }
+.admin-group-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-group-meta {
+  font-size: 11px;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+.admin-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.admin-switch-row input { width: 16px; height: 16px; accent-color: var(--brand); }
+.admin-system-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
 /* 搜索分组标题 */
 .conv-section {
   padding: 12px 18px 4px;
@@ -1244,7 +1369,7 @@ button:disabled:active { transform: none; }
 /* ═══════════════════════════════════════════════════════
    管理后台
    ═══════════════════════════════════════════════════════ */
-.admin-panel { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.admin-panel { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
 .admin-stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -1296,7 +1421,7 @@ button:disabled:active { transform: none; }
   transform: translateY(-1px);
 }
 
-.admin-user-list { flex: 1; overflow-y: auto; padding: 10px; }
+.admin-user-list { flex: none; overflow: visible; padding: 10px; }
 .admin-loading { text-align: center; padding: 30px; color: var(--ink-3); }
 .admin-user-card {
   background: var(--surface);
