@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync } from 'fs';
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'crypto';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { dirname, join, resolve } from 'path';
@@ -240,6 +240,7 @@ app.use((req, res, next) => {
   const isPublic = (method === 'POST' && (p === '/register' || p === '/login'))
     || (method === 'GET' && (
       p === '/health'
+      || p === '/version'
       || p === '/categories'
       || p === '/market'
       || /^\/ratings\/\d+$/.test(p)
@@ -2358,6 +2359,17 @@ app.delete('/api/groups/:groupId/members', (req, res) => {
 // ─── Health ───
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'tang-chat-api', uptime: Math.round(process.uptime()), time: Date.now() });
+});
+
+// 当前前端构建版本（用于页面自动更新检测）
+app.get('/api/version', (req, res) => {
+  try {
+    const assetsDir = join(__dirname, '..', 'dist', 'assets');
+    const files = readdirSync(assetsDir).filter(f => /^index-.*\.js$/.test(f));
+    res.json({ ok: true, appJs: files[0] || null });
+  } catch {
+    res.json({ ok: true, appJs: null });
+  }
 });
 
 // ─── Start ───

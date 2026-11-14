@@ -1593,6 +1593,18 @@ button:disabled:active { transform: none; }
   gap: 2px;
   flex-shrink: 0;
 }
+/* 上架表单：双列紧凑布局，数量字段首屏可见 */
+.market-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+}
+.market-form-col { min-width: 0; }
+.market-form-col .market-input { margin-bottom: 12px; }
+@media (max-width: 520px) {
+  .market-form-grid { grid-template-columns: 1fr; }
+}
+
 /* 库存徽标 */
 .market-item-stock { margin: 8px 0 10px; }
 .stock-badge {

@@ -7,6 +7,9 @@ import {
   Image as ImageIcon, Paperclip, FileText, Pin, Bell, BellOff, Download, Crown
 } from 'lucide-react';
 
+// 由 vite define 注入的构建时间（用于确认页面是否最新）
+declare const __BUILD_TIME__: string;
+
 /* ═══════════════════════════════════════
    Types
    ═══════════════════════════════════════ */
@@ -1247,6 +1250,28 @@ export default function App() {
   };
 
   // ─── Admin functions ───
+  // 自动更新：检测服务器前端构建是否变化，变化则自动刷新（避免一直用旧页面）
+  useEffect(() => {
+    const scriptEl = document.querySelector('script[type="module"][src]');
+    const loadedSrc = scriptEl ? scriptEl.getAttribute('src') || '' : '';
+    if (!loadedSrc) return;
+    let stopped = false;
+    const check = async () => {
+      try {
+        const res = await fetch('/api/version', { cache: 'no-store' });
+        const data = await res.json();
+        if (!stopped && data.ok && data.appJs && !loadedSrc.endsWith(data.appJs)) {
+          stopped = true;
+          adminToastFn('检测到新版本，正在自动刷新…');
+          setTimeout(() => window.location.reload(), 900);
+        }
+      } catch { /* 忽略网络错误 */ }
+    };
+    const t = setInterval(check, 60000);
+    check();
+    return () => { stopped = true; clearInterval(t); };
+  }, []);
+
   const isAdminUser = currentUser?.role === 'admin' || currentUser?.role === 'superadmin';
   const isSuperAdminUser = currentUser?.role === 'superadmin';
 
@@ -2948,6 +2973,10 @@ export default function App() {
                   ))}
                 </div>
               </div>
+              <div className="settings-item">
+                <span className="settings-label">版本</span>
+                <span className="settings-value" style={{fontSize:'12px',color:'#8c8c8c'}}>{__BUILD_TIME__}</span>
+              </div>
               <button className="logout-btn" onClick={() => { setProfileForm({ nickname: currentUser?.nickname || '', avatar: currentUser?.avatar || '', bio: currentUser?.bio || '' }); setShowProfileModal(true); }} style={{marginTop:'8px'}}>
                 <Edit3 size={14} /> 编辑资料
               </button>
@@ -3357,55 +3386,68 @@ export default function App() {
             {/* Publish Modal */}
             {showPublishModal && (
               <div className="modal-overlay" onClick={() => setShowPublishModal(false)}>
-                <div className="modal-content market-modal" onClick={e => e.stopPropagation()}>
+                <div className="modal-content market-modal modal-wide" onClick={e => e.stopPropagation()}>
                   <div className="modal-header">
                     <span>上架商品</span>
                     <button className="modal-close" onClick={() => setShowPublishModal(false)}><X size={18} /></button>
                   </div>
                   <div className="modal-body">
-                    <label className="market-label">标题</label>
-                    <input
-                      className="market-input"
-                      placeholder="商品标题"
-                      value={publishForm.title}
-                      onChange={e => setPublishForm(f => ({...f, title: e.target.value}))}
-                    />
+                    <div className="market-form-grid">
+                      <div className="market-form-col">
+                        <label className="market-label">标题</label>
+                        <input
+                          className="market-input"
+                          placeholder="商品标题"
+                          value={publishForm.title}
+                          onChange={e => setPublishForm(f => ({...f, title: e.target.value}))}
+                        />
+                      </div>
+                      <div className="market-form-col">
+                        <label className="market-label">价格（积分）</label>
+                        <input
+                          className="market-input"
+                          type="number"
+                          min="1"
+                          placeholder="输入价格"
+                          value={publishForm.price}
+                          onChange={e => setPublishForm(f => ({...f, price: e.target.value}))}
+                        />
+                      </div>
+                      <div className="market-form-col">
+                        <label className="market-label">
+                          数量（库存）<span style={{color:'#8c8c8c',fontWeight:400,fontSize:'12px'}}> · 不填 = 无限量</span>
+                        </label>
+                        <input
+                          className="market-input"
+                          type="number"
+                          min="1"
+                          placeholder="留空 = 无限量"
+                          value={publishForm.stock}
+                          onChange={e => setPublishForm(f => ({...f, stock: e.target.value}))}
+                        />
+                        <div style={{fontSize:'11px',color:'#8c8c8c',marginTop:'3px'}}>填数字＝最多卖这么多份；留空＝不限次数</div>
+                      </div>
+                      <div className="market-form-col">
+                        <label className="market-label">分类</label>
+                        <select
+                          className="market-input"
+                          value={publishForm.categoryId || ''}
+                          onChange={e => setPublishForm(f => ({...f, categoryId: e.target.value ? Number(e.target.value) : null}))}
+                        >
+                          <option value="">请选择分类</option>
+                          {categories.map(cat => (
+                            <option key={cat.id} value={cat.id}>{cat.icon} {cat.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                     <label className="market-label">描述</label>
                     <textarea
                       className="market-textarea"
                       placeholder="商品详细描述"
-                      rows={5}
+                      rows={3}
                       value={publishForm.description}
                       onChange={e => setPublishForm(f => ({...f, description: e.target.value}))}
-                    />
-                    <label className="market-label">分类</label>
-                    <select
-                      className="market-input"
-                      value={publishForm.categoryId || ''}
-                      onChange={e => setPublishForm(f => ({...f, categoryId: e.target.value ? Number(e.target.value) : null}))}
-                    >
-                      <option value="">请选择分类</option>
-                      {categories.map(cat => (
-                        <option key={cat.id} value={cat.id}>{cat.icon} {cat.name}</option>
-                      ))}
-                    </select>
-                    <label className="market-label">价格（积分）</label>
-                    <input
-                      className="market-input"
-                      type="number"
-                      min="1"
-                      placeholder="输入价格"
-                      value={publishForm.price}
-                      onChange={e => setPublishForm(f => ({...f, price: e.target.value}))}
-                    />
-                    <label className="market-label">数量（库存，可选）</label>
-                    <input
-                      className="market-input"
-                      type="number"
-                      min="1"
-                      placeholder="留空 = 无限量；填了就卖完为止"
-                      value={publishForm.stock}
-                      onChange={e => setPublishForm(f => ({...f, stock: e.target.value}))}
                     />
                     <div className="publish-tax-hint">
                       <Coins size={14} style={{color:'#faad14',flexShrink:0}} />
@@ -3415,7 +3457,7 @@ export default function App() {
                     <textarea
                       className="market-textarea"
                       placeholder="例如：感谢购买！使用方法：..."
-                      rows={3}
+                      rows={2}
                       value={publishForm.postBuyMessage}
                       onChange={e => setPublishForm(f => ({...f, postBuyMessage: e.target.value}))}
                     />
