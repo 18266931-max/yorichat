@@ -1048,6 +1048,8 @@ export default function App() {
   lastGroupMsgIdRef.current = lastGroupMsgId;
   // 轮询防重入：上一轮未跑完时跳过本轮，避免慢网络下请求堆积
   const pollingRef = useRef(false);
+  // 搜索请求序号：防止快速输入时旧响应覆盖新结果
+  const searchSeqRef = useRef(0);
 
   const activeConversation = conversations.find(c => c.id === activeConvId) ?? null;
   const totalUnread = conversations.reduce((s, c) => s + c.unread, 0);
@@ -1084,6 +1086,10 @@ export default function App() {
     setMyItems([]);
     setCartItems([]);
     setMyOrders([]);
+    setConvSettings({});
+    setMsgSearchResults([]);
+    setMentionedGroupIds(new Set());
+    setSearchQuery('');
     setActiveView('chats');
     setPage('login');
   };
@@ -1779,16 +1785,20 @@ export default function App() {
   const loadGroupMessages = async (groupId: number) => {
     if (!currentUser) return;
     const lastId = lastGroupMsgId[groupId] || 0;
-    const res = await apiGet(`/groups/${groupId}/messages?after=${lastId}`, currentUser.id) as { ok: boolean; messages: GroupMessage[] };
+    const res = await apiGet(`/groups/${groupId}/messages?after=${lastId}`, currentUser.id) as { ok: boolean; messages: GroupMessage[]; changed?: GroupMessage[] };
     if (res.ok && res.messages.length > 0) {
-      setGroupMessages(prev => ({
-        ...prev,
-        [groupId]: [...(prev[groupId] || []), ...res.messages]
-      }));
+      // 去重：手动加载与轮询可能并发返回同一批消息
+      setGroupMessages(prev => {
+        const existing = prev[groupId] || [];
+        const existingIds = new Set(existing.map(m => m.id));
+        const unique = res.messages.filter(m => !existingIds.has(m.id));
+        if (unique.length === 0) return prev;
+        return { ...prev, [groupId]: [...existing, ...unique] };
+      });
       const maxId = Math.max(...res.messages.map(m => m.id));
       setLastGroupMsgId(prev => ({
         ...prev,
-        [groupId]: maxId
+        [groupId]: Math.max(maxId, prev[groupId] || 0),
       }));
     }
   };
@@ -1964,7 +1974,14 @@ export default function App() {
                 return {
                   ...c,
                   messages: msgs,
-                  lastMessage: lastMsg ? { content: lastMsg.content, timestamp: lastMsg.timestamp } : undefined,
+                  lastMessage: lastMsg
+                    ? {
+                        content: lastMsg.recalled
+                          ? (lastMsg.senderId === user.id ? '你撤回了一条消息' : '对方撤回了一条消息')
+                          : lastMsg.content,
+                        timestamp: lastMsg.timestamp,
+                      }
+                    : undefined,
                 };
               }));
             }
@@ -2185,11 +2202,16 @@ export default function App() {
     if (!currentUser) return;
     const res = await apiDelete(`/messages/${messageId}`, currentUser.id);
     if (res.ok) {
-      setConversations(prev => prev.map(c =>
-        c.peerId === peerId
-          ? { ...c, messages: c.messages.filter(m => m.id !== `server-${messageId}`) }
-          : c
-      ));
+      setConversations(prev => prev.map(c => {
+        if (c.peerId !== peerId) return c;
+        const msgs = c.messages.filter(m => m.id !== `server-${messageId}`);
+        const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
+        return {
+          ...c,
+          messages: msgs,
+          lastMessage: lastMsg ? { content: lastMsg.content, timestamp: lastMsg.timestamp } : undefined,
+        };
+      }));
     } else {
       adminToastFn(res.msg || '删除失败');
     }
@@ -2200,11 +2222,19 @@ export default function App() {
     if (!currentUser) return;
     const res = await apiPost(`/messages/${messageId}/recall`, {}, currentUser.id);
     if (res.ok) {
-      setConversations(prev => prev.map(c =>
-        c.peerId === peerId
-          ? { ...c, messages: c.messages.map(m => (m.id === `server-${messageId}` ? { ...m, recalled: true } : m)) }
-          : c
-      ));
+      setConversations(prev => prev.map(c => {
+        if (c.peerId !== peerId) return c;
+        const msgs = c.messages.map(m => (m.id === `server-${messageId}` ? { ...m, recalled: true } : m));
+        // 若撤回的是最后一条消息，会话列表预览同步更新
+        const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : undefined;
+        return {
+          ...c,
+          messages: msgs,
+          lastMessage: lastMsg
+            ? { content: lastMsg.recalled ? '你撤回了一条消息' : lastMsg.content, timestamp: lastMsg.timestamp }
+            : undefined,
+        };
+      }));
       adminToastFn('已撤回');
     } else {
       adminToastFn(res.msg || '撤回失败');
@@ -2214,10 +2244,12 @@ export default function App() {
   // 消息搜索（输入即时查询，展示匹配会话 + 匹配消息）
   const handleChatSearch = async (q: string) => {
     setSearchQuery(q);
+    const seq = ++searchSeqRef.current;
     if (!q.trim() || !currentUser) { setMsgSearchResults([]); return; }
     try {
       const res = await apiGet(`/messages/search?q=${encodeURIComponent(q.trim())}`, currentUser.id);
-      if (res.ok) setMsgSearchResults(res.results || []);
+      // 只接受最新一次请求的结果
+      if (seq === searchSeqRef.current && res.ok) setMsgSearchResults(res.results || []);
     } catch {}
   };
 
@@ -2238,14 +2270,31 @@ export default function App() {
     const cur = convSettings[peerId] || { pinned: false, muted: false };
     const next = { ...cur, pinned: !cur.pinned };
     setConvSettings(prev => ({ ...prev, [peerId]: next }));
-    try { await apiPost('/conv-settings', { peerId, pinned: next.pinned }, currentUser?.id); } catch {}
+    try {
+      const res = await apiPost('/conv-settings', { peerId, pinned: next.pinned }, currentUser?.id);
+      if (!res.ok) {
+        // 失败回滚，避免界面与服务端不一致
+        setConvSettings(prev => ({ ...prev, [peerId]: cur }));
+        adminToastFn(res.msg || '置顶设置失败');
+      }
+    } catch {
+      setConvSettings(prev => ({ ...prev, [peerId]: cur }));
+    }
   };
 
   const toggleConvMute = async (peerId: number) => {
     const cur = convSettings[peerId] || { pinned: false, muted: false };
     const next = { ...cur, muted: !cur.muted };
     setConvSettings(prev => ({ ...prev, [peerId]: next }));
-    try { await apiPost('/conv-settings', { peerId, muted: next.muted }, currentUser?.id); } catch {}
+    try {
+      const res = await apiPost('/conv-settings', { peerId, muted: next.muted }, currentUser?.id);
+      if (!res.ok) {
+        setConvSettings(prev => ({ ...prev, [peerId]: cur }));
+        adminToastFn(res.msg || '免打扰设置失败');
+      }
+    } catch {
+      setConvSettings(prev => ({ ...prev, [peerId]: cur }));
+    }
   };
 
   const sortedConvs = [...conversations].sort((a, b) => {

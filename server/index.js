@@ -42,10 +42,20 @@ const SELLER_RATE = 0.8;
 
 function readJSON(file) {
   if (!existsSync(file)) return [];
-  return JSON.parse(readFileSync(file, 'utf-8'));
+  try {
+    return JSON.parse(readFileSync(file, 'utf-8'));
+  } catch (err) {
+    // 数据文件损坏时不让整个服务崩溃：记录并返回空数组
+    console.error(`[readJSON] 解析失败 ${file}: ${err.message}`);
+    return [];
+  }
 }
 function writeJSON(file, data) {
-  writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
+  try {
+    writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (err) {
+    console.error(`[writeJSON] 写入失败 ${file}: ${err.message}`);
+  }
 }
 
 // 给消息列表附加红包状态（active / claimed / expired / my_claimed）
@@ -190,8 +200,14 @@ app.post('/api/files/upload', (req, res) => {
   if (!userId) return res.json({ ok: false, msg: '未登录' });
   if (!data) return res.json({ ok: false, msg: '缺少文件数据' });
 
+  // 严格 base64 校验（Node 的 Buffer.from 会宽容忽略非法字符，需自行验证）
+  const b64 = String(data).replace(/\s+/g, '');
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0 || b64.length === 0) {
+    return res.json({ ok: false, msg: '文件数据无效' });
+  }
+
   let buf;
-  try { buf = Buffer.from(String(data), 'base64'); } catch { return res.json({ ok: false, msg: '文件数据无效' }); }
+  try { buf = Buffer.from(b64, 'base64'); } catch { return res.json({ ok: false, msg: '文件数据无效' }); }
   if (!buf || buf.length === 0) return res.json({ ok: false, msg: '文件为空' });
   if (buf.length > 8 * 1024 * 1024) return res.json({ ok: false, msg: '文件不能超过 8MB' });
 
@@ -2038,6 +2054,22 @@ app.get('/api/health', (req, res) => {
 
 // ─── Start ───
 export default app;
+
+// 启动时清理过期墓碑消息（删除/撤回标记超过 7 天的记录），避免数据文件无限膨胀
+function purgeStaleTombstones() {
+  const now = Date.now();
+  const WEEK = 7 * 24 * 60 * 60 * 1000;
+  for (const file of [MESSAGES_FILE, GROUP_MESSAGES_FILE]) {
+    const list = readJSON(file);
+    if (!Array.isArray(list) || list.length === 0) continue;
+    const kept = list.filter(m => !(m.deleted && (now - (m.updatedAt || m.timestamp || 0)) > WEEK));
+    if (kept.length !== list.length) {
+      writeJSON(file, kept);
+      console.log(`[purge] ${file}: 清理墓碑消息 ${list.length - kept.length} 条`);
+    }
+  }
+}
+purgeStaleTombstones();
 
 // 仅当直接运行本文件时才监听端口（被 server.prod.js import 时不重复监听）
 const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
