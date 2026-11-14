@@ -179,6 +179,14 @@ const EMOJIS = ['😀','😂','🤣','😊','😍','🥰','😘','😜','🤔','
 const COLORS = ['#1890ff','#722ed1','#eb2f96','#fa8c16','#52c41a','#13c2c2','#f5222d','#2f54eb','#faad14','#a0d911'];
 function pickColor(id: number) { return COLORS[id % COLORS.length]; }
 
+// 头像内容：支持上传的图片地址（/uploads/...）或 emoji/文字
+function AvatarContent({ avatar, fallback }: { avatar?: string | null; fallback: string }) {
+  if (avatar && avatar.startsWith('/uploads/')) {
+    return <img className="avatar-img" src={avatar} alt="头像" />;
+  }
+  return <>{avatar || fallback}</>;
+}
+
 // 渲染消息内容，高亮 @提及（前向否定：避免把 email@x.com、a@b 这类误判为提及）
 function renderWithMentions(content: string) {
   const parts = content.split(/(?<![\w.])@[\u4e00-\u9fa5A-Za-z0-9_\-]+/g);
@@ -1086,6 +1094,11 @@ export default function App() {
   const [claimingRedpacket, setClaimingRedpacket] = useState<Redpacket | null>(null);
   
   const [showProfileModal, setShowProfileModal] = useState(false);
+  // 修改密码
+  const [showPwdModal, setShowPwdModal] = useState(false);
+  const [pwdForm, setPwdForm] = useState({ oldPassword: '', newPassword: '', confirmPassword: '' });
+  const [pwdError, setPwdError] = useState('');
+  const [pwdLoading, setPwdLoading] = useState(false);
   const [profileForm, setProfileForm] = useState({ nickname: '', avatar: '', bio: '' });
   const [showRatingModal, setShowRatingModal] = useState(false);
   const [ratingItem, setRatingItem] = useState<any>(null);
@@ -1926,6 +1939,32 @@ export default function App() {
     }
   };
 
+  // 修改自己的密码
+  const handleChangePassword = async () => {
+    setPwdError('');
+    if (!currentUser) return;
+    if (!pwdForm.oldPassword) { setPwdError('请输入原密码'); return; }
+    if (pwdForm.newPassword.length < 6) { setPwdError('新密码至少6个字符'); return; }
+    if (pwdForm.newPassword !== pwdForm.confirmPassword) { setPwdError('两次输入的新密码不一致'); return; }
+    setPwdLoading(true);
+    try {
+      const res = await apiPost('/user/password', {
+        oldPassword: pwdForm.oldPassword,
+        newPassword: pwdForm.newPassword,
+      }, currentUser.id);
+      if (res.ok) {
+        setShowPwdModal(false);
+        setPwdForm({ oldPassword: '', newPassword: '', confirmPassword: '' });
+        adminToastFn('密码已修改，下次登录请使用新密码');
+      } else {
+        setPwdError(res.msg || '修改失败');
+      }
+    } catch {
+      setPwdError('网络错误，请稍后重试');
+    }
+    setPwdLoading(false);
+  };
+
   const handleTransfer = async (targetId: number, amount: number, note: string) => {
     const res = await apiPost('/transfer', {
       targetId,
@@ -2528,7 +2567,7 @@ export default function App() {
           </button>
         )}
         <div className="sidebar-avatar" title={currentUser?.username} onClick={() => setActiveView('settings')}>
-          {currentUser?.username?.[0]?.toUpperCase()}
+          <AvatarContent avatar={currentUser?.avatar} fallback={currentUser?.username?.[0]?.toUpperCase() || '?'} />
         </div>
       </nav>
 
@@ -2782,7 +2821,11 @@ export default function App() {
             <div className="conv-list">
               <div className="settings-item">
                 <span className="settings-label">头像</span>
-                <span className="settings-value" style={{fontSize:'24px'}}>{currentUser?.avatar || currentUser?.username?.[0]?.toUpperCase() || '?'}</span>
+                <span className="settings-value" style={{fontSize:'24px',display:'inline-flex',alignItems:'center'}}>
+                  <span style={{width:30,height:30,display:'inline-flex',alignItems:'center',justifyContent:'center',overflow:'hidden',borderRadius:8}}>
+                    <AvatarContent avatar={currentUser?.avatar} fallback={currentUser?.username?.[0]?.toUpperCase() || '?'} />
+                  </span>
+                </span>
               </div>
               <div className="settings-item">
                 <span className="settings-label">用户名</span>
@@ -2826,6 +2869,9 @@ export default function App() {
               </div>
               <button className="logout-btn" onClick={() => { setProfileForm({ nickname: currentUser?.nickname || '', avatar: currentUser?.avatar || '', bio: currentUser?.bio || '' }); setShowProfileModal(true); }} style={{marginTop:'8px'}}>
                 <Edit3 size={14} /> 编辑资料
+              </button>
+              <button className="logout-btn" onClick={() => { setPwdError(''); setPwdForm({ oldPassword: '', newPassword: '', confirmPassword: '' }); setShowPwdModal(true); }} style={{marginTop:'8px'}}>
+                修改密码
               </button>
               <button className="logout-btn" onClick={handleLogout} style={{marginTop:'16px',background:'#ff4d4f'}}>
                 退出登录
@@ -3671,13 +3717,36 @@ export default function App() {
                 />
               </div>
               <div className="profile-form-item">
-                <label>头像</label>
-                <input
-                  type="text"
-                  placeholder="输入 emoji 或文字"
-                  value={profileForm.avatar}
-                  onChange={e => setProfileForm({ ...profileForm, avatar: e.target.value })}
-                />
+                <label>头像（emoji/文字，或上传图片）</label>
+                <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                  <input
+                    type="text"
+                    placeholder="输入 emoji 或文字"
+                    value={profileForm.avatar}
+                    onChange={e => setProfileForm({ ...profileForm, avatar: e.target.value })}
+                    style={{flex:1}}
+                  />
+                  <label className="modal-btn cancel" style={{cursor:'pointer', margin:0, display:'inline-flex', alignItems:'center', minHeight:40, padding:'0 14px', flexShrink:0}}>
+                    上传图片
+                    <input
+                      type="file"
+                      accept="image/*"
+                      style={{display:'none'}}
+                      onChange={async e => {
+                        const f = e.target.files?.[0];
+                        e.target.value = '';
+                        if (!f) return;
+                        const info = await uploadFile(f);
+                        if (info) setProfileForm(prev => ({ ...prev, avatar: info.url }));
+                      }}
+                    />
+                  </label>
+                  {profileForm.avatar && (
+                    <span style={{width:40,height:40,display:'inline-flex',alignItems:'center',justifyContent:'center',overflow:'hidden',borderRadius:10,flexShrink:0,fontSize:22}}>
+                      <AvatarContent avatar={profileForm.avatar} fallback="?" />
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="profile-form-item">
                 <label>个人简介</label>
@@ -3692,6 +3761,54 @@ export default function App() {
             <div className="modal-footer">
               <button className="modal-btn cancel" onClick={() => setShowProfileModal(false)}>取消</button>
               <button className="modal-btn confirm" onClick={handleUpdateProfile}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 修改密码 Modal */}
+      {showPwdModal && (
+        <div className="modal-overlay" onClick={() => setShowPwdModal(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <span>修改密码</span>
+              <button className="modal-close" onClick={() => setShowPwdModal(false)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <div className="profile-form-item">
+                <label>原密码</label>
+                <input
+                  type="password"
+                  placeholder="请输入当前密码"
+                  value={pwdForm.oldPassword}
+                  onChange={e => setPwdForm({ ...pwdForm, oldPassword: e.target.value })}
+                />
+              </div>
+              <div className="profile-form-item">
+                <label>新密码</label>
+                <input
+                  type="password"
+                  placeholder="至少6个字符"
+                  value={pwdForm.newPassword}
+                  onChange={e => setPwdForm({ ...pwdForm, newPassword: e.target.value })}
+                />
+              </div>
+              <div className="profile-form-item">
+                <label>确认新密码</label>
+                <input
+                  type="password"
+                  placeholder="再输入一次新密码"
+                  value={pwdForm.confirmPassword}
+                  onChange={e => setPwdForm({ ...pwdForm, confirmPassword: e.target.value })}
+                />
+              </div>
+              {pwdError && <div style={{color:'#e5484d',fontSize:13,marginTop:4}}>{pwdError}</div>}
+            </div>
+            <div className="modal-footer">
+              <button className="modal-btn cancel" onClick={() => setShowPwdModal(false)}>取消</button>
+              <button className="modal-btn confirm" onClick={handleChangePassword} disabled={pwdLoading}>
+                {pwdLoading ? '提交中...' : '确认修改'}
+              </button>
             </div>
           </div>
         </div>

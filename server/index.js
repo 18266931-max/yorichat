@@ -1411,8 +1411,11 @@ app.put('/api/user/profile', (req, res) => {
   if (nickname !== undefined && (typeof nickname !== 'string' || nickname.trim().length > 20)) {
     return res.json({ ok: false, msg: '昵称必须是1-20个字符的文本' });
   }
-  if (avatar !== undefined && (typeof avatar !== 'string' || avatar.length > 8)) {
-    return res.json({ ok: false, msg: '头像格式无效' });
+  // 头像支持 emoji/文字（≤8 字符）或上传图片地址（/uploads/...）
+  if (avatar !== undefined) {
+    const okAvatar = typeof avatar === 'string' &&
+      (avatar.startsWith('/uploads/') ? avatar.length <= 160 : avatar.length <= 8);
+    if (!okAvatar) return res.json({ ok: false, msg: '头像格式无效' });
   }
   if (bio !== undefined && (typeof bio !== 'string' || bio.length > 200)) {
     return res.json({ ok: false, msg: '简介不能超过200字' });
@@ -1440,6 +1443,32 @@ app.get('/api/user/profile', (req, res) => {
   if (!user) return res.json({ ok: false, msg: '用户不存在' });
 
   res.json({ ok: true, user: publicUser(user) });
+});
+
+// 修改自己的密码（校验原密码）
+app.post('/api/user/password', (req, res) => {
+  const userId = parseInt(req.headers['x-user-id']) || 0;
+  const { oldPassword, newPassword } = req.body;
+
+  if (!userId) return res.json({ ok: false, msg: '未登录' });
+  if (typeof oldPassword !== 'string' || typeof newPassword !== 'string') {
+    return res.json({ ok: false, msg: '参数无效' });
+  }
+  if (newPassword.length < 6 || newPassword.length > 64) {
+    return res.json({ ok: false, msg: '新密码需为6-64个字符' });
+  }
+  if (oldPassword === newPassword) return res.json({ ok: false, msg: '新密码不能与原密码相同' });
+
+  users = readJSON(USERS_FILE);
+  const user = users.find(u => u.id === userId);
+  if (!user) return res.json({ ok: false, msg: '用户不存在' });
+  if (!verifyPassword(oldPassword, user.password)) {
+    return res.json({ ok: false, msg: '原密码错误' });
+  }
+
+  user.password = hashPassword(newPassword);
+  writeJSON(USERS_FILE, users);
+  res.json({ ok: true, msg: '密码已修改，下次登录请使用新密码' });
 });
 
 // ─── Categories APIs ───
