@@ -4,7 +4,7 @@ import {
   UserPlus, Search, Shield, Ban, RotateCcw, Trash2, UserCheck, UserX,
   Mic, ShoppingBag, Package, ShoppingCart, Plus, X, Coins,
   Star, ArrowRightLeft, Edit3, Heart, Gift, Check, Reply,
-  Image as ImageIcon, Paperclip, FileText, Pin, Bell, BellOff
+  Image as ImageIcon, Paperclip, FileText, Pin, Bell, BellOff, Download
 } from 'lucide-react';
 
 /* ═══════════════════════════════════════
@@ -185,6 +185,27 @@ function AvatarContent({ avatar, fallback }: { avatar?: string | null; fallback:
     return <img className="avatar-img" src={avatar} alt="头像" />;
   }
   return <>{avatar || fallback}</>;
+}
+
+// 下载文件/图片：用 Blob 触发浏览器下载，保留原始文件名（支持中文）
+async function downloadFile(url: string, fileName?: string | null) {
+  if (!url) return;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('fetch failed');
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = fileName || 'download';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+  } catch {
+    // 兜底：直接打开（浏览器会按服务器 Content-Disposition 处理）
+    window.open(url, '_blank');
+  }
 }
 
 // 渲染消息内容，高亮 @提及（前向否定：避免把 email@x.com、a@b 这类误判为提及）
@@ -640,12 +661,21 @@ function ChatView({ conversation, currentUser, onSend, isBlockedByPeer, isPeerBl
                         <span className="msg-reply-content">{chatMsg.replyTo.content}</span>
                       </div>
                     )}
-                    <img
-                      className="msg-image"
-                      src={chatMsg.fileUrl || undefined}
-                      alt={chatMsg.fileName || '图片'}
-                      onClick={() => chatMsg.fileUrl && window.open(chatMsg.fileUrl, '_blank')}
-                    />
+                    <div className="msg-image-wrap">
+                      <img
+                        className="msg-image"
+                        src={chatMsg.fileUrl || undefined}
+                        alt={chatMsg.fileName || '图片'}
+                        onClick={() => chatMsg.fileUrl && window.open(chatMsg.fileUrl, '_blank')}
+                      />
+                      <button
+                        className="msg-download-btn"
+                        title="下载图片"
+                        onClick={(e) => { e.stopPropagation(); downloadFile(chatMsg.fileUrl || '', chatMsg.fileName || '图片.png'); }}
+                      >
+                        <Download size={14} />
+                      </button>
+                    </div>
                     {actions}
                   </div>
                 ) : chatMsg.type === 'file' ? (
@@ -656,12 +686,19 @@ function ChatView({ conversation, currentUser, onSend, isBlockedByPeer, isPeerBl
                         <span className="msg-reply-content">{chatMsg.replyTo.content}</span>
                       </div>
                     )}
-                    <div className="msg-file" onClick={() => chatMsg.fileUrl && window.open(chatMsg.fileUrl, '_blank')}>
-                      <FileText size={20} />
-                      <div className="msg-file-info">
+                    <div className="msg-file">
+                      <FileText size={20} onClick={() => chatMsg.fileUrl && window.open(chatMsg.fileUrl, '_blank')} />
+                      <div className="msg-file-info" onClick={() => chatMsg.fileUrl && window.open(chatMsg.fileUrl, '_blank')}>
                         <div className="msg-file-name">{chatMsg.fileName || msg.content}</div>
                         {chatMsg.fileSize ? <div className="msg-file-size">{Math.round(chatMsg.fileSize / 1024)} KB</div> : null}
                       </div>
+                      <button
+                        className="msg-file-download"
+                        title="下载文件"
+                        onClick={(e) => { e.stopPropagation(); downloadFile(chatMsg.fileUrl || '', chatMsg.fileName || 'download'); }}
+                      >
+                        <Download size={15} />
+                      </button>
                     </div>
                     {actions}
                   </div>
@@ -924,12 +961,21 @@ function GroupChatView({ groupId, currentUser, groupMessages, onSend, onAddMembe
                         <span className="msg-reply-content">{msg.replyTo.content}</span>
                       </div>
                     )}
-                    <img
-                      className="msg-image"
-                      src={msg.fileUrl || undefined}
-                      alt={msg.fileName || '图片'}
-                      onClick={() => msg.fileUrl && window.open(msg.fileUrl, '_blank')}
-                    />
+                    <div className="msg-image-wrap">
+                      <img
+                        className="msg-image"
+                        src={msg.fileUrl || undefined}
+                        alt={msg.fileName || '图片'}
+                        onClick={() => msg.fileUrl && window.open(msg.fileUrl, '_blank')}
+                      />
+                      <button
+                        className="msg-download-btn"
+                        title="下载图片"
+                        onClick={(e) => { e.stopPropagation(); downloadFile(msg.fileUrl || '', msg.fileName || '图片.png'); }}
+                      >
+                        <Download size={14} />
+                      </button>
+                    </div>
                     {actions}
                   </div>
                 ) : msg.type === 'file' ? (
@@ -940,12 +986,19 @@ function GroupChatView({ groupId, currentUser, groupMessages, onSend, onAddMembe
                         <span className="msg-reply-content">{msg.replyTo.content}</span>
                       </div>
                     )}
-                    <div className="msg-file" onClick={() => msg.fileUrl && window.open(msg.fileUrl, '_blank')}>
-                      <FileText size={20} />
-                      <div className="msg-file-info">
+                    <div className="msg-file">
+                      <FileText size={20} onClick={() => msg.fileUrl && window.open(msg.fileUrl, '_blank')} />
+                      <div className="msg-file-info" onClick={() => msg.fileUrl && window.open(msg.fileUrl, '_blank')}>
                         <div className="msg-file-name">{msg.fileName || msg.content}</div>
                         {msg.fileSize ? <div className="msg-file-size">{Math.round(msg.fileSize / 1024)} KB</div> : null}
                       </div>
+                      <button
+                        className="msg-file-download"
+                        title="下载文件"
+                        onClick={(e) => { e.stopPropagation(); downloadFile(msg.fileUrl || '', msg.fileName || 'download'); }}
+                      >
+                        <Download size={15} />
+                      </button>
                     </div>
                     {actions}
                   </div>

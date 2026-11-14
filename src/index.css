@@ -857,6 +857,33 @@ button:disabled:active { transform: none; }
 }
 
 /* ── 图片 / 文件消息 ── */
+.msg-image-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+}
+.msg-download-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  transition: all 0.15s var(--ease);
+  z-index: 2;
+}
+.msg-download-btn:hover {
+  background: var(--brand);
+  transform: scale(1.06);
+}
 .msg-image {
   display: block;
   max-width: 260px;
@@ -894,6 +921,26 @@ button:disabled:active { transform: none; }
   max-width: 200px;
 }
 .msg-file-size { font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+.msg-file-download {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.msg-file-download:hover {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
 .file-btn-busy { opacity: 0.6; pointer-events: none; }
 
 /* @提及 高亮与徽标 */
