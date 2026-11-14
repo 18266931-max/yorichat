@@ -1276,14 +1276,26 @@ export default function App() {
   const isSuperAdminUser = currentUser?.role === 'superadmin';
 
   const loadAdminData = useCallback(async () => {
-    if (!currentUser || currentUser.role !== 'admin') return;
+    if (!currentUser || (currentUser.role !== 'admin' && currentUser.role !== 'superadmin')) return;
     setAdminLoading(true);
     try {
       const [usersRes, statsRes] = await Promise.all([
         apiGet('/admin/users', currentUser.id),
         apiGet('/admin/stats', currentUser.id),
       ]);
-      if (usersRes.ok) setAdminUsers(usersRes.users);
+      if (usersRes.ok) {
+        setAdminUsers(usersRes.users);
+        // 以服务端返回的身份为准，修正本地可能过期的 role（否则管理按钮会忽隐忽现）
+        if (typeof usersRes.isSuperAdmin === 'boolean') {
+          const serverRole = usersRes.isSuperAdmin ? 'superadmin' : 'admin';
+          if (currentUser.role !== serverRole) {
+            const updated = { ...currentUser, role: serverRole };
+            setCurrentUser(updated);
+            sessionStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+          }
+        }
+      }
       if (statsRes.ok) setAdminStats(statsRes.stats);
     } catch {}
     setAdminLoading(false);

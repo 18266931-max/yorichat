@@ -853,6 +853,7 @@ app.get('/api/admin/users', (req, res) => {
     nickname: u.nickname,
     role: u.role || 'user',
     disabled: !!u.disabled,
+    credits: u.credits || 0,
     createdAt: u.createdAt || null,
   }));
   res.json({ ok: true, users: list, isSuperAdmin: isSuperAdmin(userId) });
