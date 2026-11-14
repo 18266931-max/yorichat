@@ -1149,6 +1149,171 @@ app.get('/api/admin/backup', (req, res) => {
   res.send(JSON.stringify({ exportedAt: new Date().toISOString(), data }, null, 2));
 });
 
+// ─── 超级管理员高危操作 ───
+
+// 彻底删除用户（连同其消息、好友、群成员、商品、订单等）
+app.post('/api/admin/users/:targetId/purge', (req, res) => {
+  const userId = parseInt(req.headers['x-user-id']) || 0;
+  const targetId = parseInt(req.params.targetId);
+  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以彻底删除用户' });
+  if (targetId === userId) return res.json({ ok: false, msg: '不能删除自己的账号' });
+
+  users = readJSON(USERS_FILE);
+  const target = users.find(u => u.id === targetId);
+  if (!target) return res.json({ ok: false, msg: '用户不存在' });
+  if (target.role === ROLE_SUPER) {
+    return res.json({ ok: false, msg: '不能直接删除超级管理员，请先取消其超级管理员身份' });
+  }
+  const confirmName = String(req.body?.confirmUsername || '').trim();
+  if (confirmName !== target.username) {
+    return res.json({ ok: false, msg: '请输入正确的用户名以确认删除' });
+  }
+
+  writeJSON(USERS_FILE, users.filter(u => u.id !== targetId));
+  writeJSON(MESSAGES_FILE, readJSON(MESSAGES_FILE).filter(m => m.senderId !== targetId && m.receiverId !== targetId));
+  writeJSON(FRIENDS_FILE, readJSON(FRIENDS_FILE).filter(f => f.userId !== targetId && f.friendId !== targetId));
+  writeJSON(GROUP_MEMBERS_FILE, readJSON(GROUP_MEMBERS_FILE).filter(m => m.userId !== targetId));
+  writeJSON(GROUP_MESSAGES_FILE, readJSON(GROUP_MESSAGES_FILE).filter(m => m.senderId !== targetId));
+  writeJSON(ITEMS_FILE, readJSON(ITEMS_FILE).filter(i => i.sellerId !== targetId));
+  writeJSON(ORDERS_FILE, readJSON(ORDERS_FILE).filter(o => o.buyerId !== targetId && o.sellerId !== targetId));
+  writeJSON(CART_FILE, readJSON(CART_FILE).filter(c => c.userId !== targetId));
+  writeJSON(RATINGS_FILE, readJSON(RATINGS_FILE).filter(r => r.userId !== targetId));
+  writeJSON(TRANSFERS_FILE, readJSON(TRANSFERS_FILE).filter(t => t.senderId !== targetId && t.receiverId !== targetId));
+  writeJSON(REDPACKETS_FILE, readJSON(REDPACKETS_FILE).filter(r => r.senderId !== targetId));
+  writeJSON(CONV_SETTINGS_FILE, readJSON(CONV_SETTINGS_FILE).filter(s => s.userId !== targetId && s.peerId !== targetId));
+  writeJSON(BLOCKS_FILE, readJSON(BLOCKS_FILE).filter(b => b.blockerId !== targetId && b.blockedId !== targetId));
+
+  res.json({ ok: true, msg: `已彻底删除用户 ${target.username} 及其全部数据` });
+});
+
+// 消息审查：列出所有私聊会话（仅超级管理员）
+app.get('/api/admin/audit/conversations', (req, res) => {
+  const adminId = parseInt(req.query.userId) || 0;
+  if (!adminId || !isSuperAdmin(adminId)) return res.json({ ok: false, msg: '只有超级管理员可以查看消息' });
+
+  users = readJSON(USERS_FILE);
+  const messages = readJSON(MESSAGES_FILE);
+  const map = new Map();
+  for (const m of messages) {
+    if (m.deleted || !m.senderId || !m.receiverId) continue;
+    const [a, b] = m.senderId < m.receiverId ? [m.senderId, m.receiverId] : [m.receiverId, m.senderId];
+    const key = `${a}-${b}`;
+    const cur = map.get(key) || { userA: a, userB: b, count: 0, lastAt: 0, lastText: '' };
+    cur.count += 1;
+    if ((m.timestamp || 0) >= cur.lastAt) {
+      cur.lastAt = m.timestamp || 0;
+      cur.lastText = m.recalled ? '[已撤回]' : (m.deleted ? '[已删除]' : (m.content || (m.type === 'image' ? '[图片]' : m.type === 'file' ? '[文件]' : '')));
+    }
+    map.set(key, cur);
+  }
+  const nameOf = id => {
+    const u = users.find(x => x.id === id);
+    return u ? (u.nickname || u.username) : `用户${id}`;
+  };
+  const list = [...map.values()]
+    .sort((x, y) => y.lastAt - x.lastAt)
+    .map(c => ({ ...c, nameA: nameOf(c.userA), nameB: nameOf(c.userB) }));
+  res.json({ ok: true, conversations: list });
+});
+
+// 消息审查：读取某两人的聊天记录（仅超级管理员）
+app.get('/api/admin/audit/messages', (req, res) => {
+  const adminId = parseInt(req.query.userId) || 0;
+  if (!adminId || !isSuperAdmin(adminId)) return res.json({ ok: false, msg: '只有超级管理员可以查看消息' });
+  const userA = parseInt(req.query.userA) || 0;
+  const userB = parseInt(req.query.userB) || 0;
+  if (!userA || !userB) return res.json({ ok: false, msg: '缺少用户参数' });
+
+  users = readJSON(USERS_FILE);
+  const nameOf = id => {
+    const u = users.find(x => x.id === id);
+    return u ? (u.nickname || u.username) : `用户${id}`;
+  };
+  const all = readJSON(MESSAGES_FILE).filter(m =>
+    !m.deleted && (
+      (m.senderId === userA && m.receiverId === userB) ||
+      (m.senderId === userB && m.receiverId === userA)
+    )
+  ).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+  res.json({
+    ok: true,
+    messages: all.map(m => ({
+      id: m.id,
+      senderId: m.senderId,
+      senderName: nameOf(m.senderId),
+      content: m.recalled ? '[已撤回]' : (m.type === 'image' ? '[图片]' : m.type === 'file' ? `[文件] ${m.fileName || ''}` : m.content),
+      timestamp: m.timestamp,
+      read: !!m.read,
+    })),
+  });
+});
+
+// 一键重置市场数据（商品 / 订单 / 购物车 / 评价，仅超级管理员）
+app.post('/api/admin/market/reset', (req, res) => {
+  const userId = parseInt(req.headers['x-user-id']) || 0;
+  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以重置市场数据' });
+  if (req.body?.confirm !== 'RESET_MARKET') return res.json({ ok: false, msg: '需要确认参数' });
+
+  const counts = {
+    items: readJSON(ITEMS_FILE).length,
+    orders: readJSON(ORDERS_FILE).length,
+    cart: readJSON(CART_FILE).length,
+    ratings: readJSON(RATINGS_FILE).length,
+  };
+  writeJSON(ITEMS_FILE, []);
+  writeJSON(ORDERS_FILE, []);
+  writeJSON(CART_FILE, []);
+  writeJSON(RATINGS_FILE, []);
+  res.json({ ok: true, msg: `已清空市场：商品 ${counts.items}、订单 ${counts.orders}、购物车 ${counts.cart}、评价 ${counts.ratings}`, counts });
+});
+
+// 导入备份恢复数据（仅超级管理员）
+app.post('/api/admin/restore', (req, res) => {
+  const userId = parseInt(req.headers['x-user-id']) || 0;
+  if (!userId || !isSuperAdmin(userId)) return res.json({ ok: false, msg: '只有超级管理员可以恢复备份' });
+  if (req.body?.confirm !== 'RESTORE') return res.json({ ok: false, msg: '需要确认参数' });
+
+  const data = req.body?.data;
+  if (!data || typeof data !== 'object') return res.json({ ok: false, msg: '备份数据无效' });
+
+  const targets = {
+    users: USERS_FILE,
+    friends: FRIENDS_FILE,
+    messages: MESSAGES_FILE,
+    group_members: GROUP_MEMBERS_FILE,
+    group_messages: GROUP_MESSAGES_FILE,
+    groups: GROUPS_FILE,
+    items: ITEMS_FILE,
+    orders: ORDERS_FILE,
+    cart: CART_FILE,
+    ratings: RATINGS_FILE,
+    transfers: TRANSFERS_FILE,
+    categories: CATEGORIES_FILE,
+    redpackets: REDPACKETS_FILE,
+    conv_settings: CONV_SETTINGS_FILE,
+  };
+  const restored = [];
+  for (const [key, file] of Object.entries(targets)) {
+    if (!Array.isArray(data[key])) continue;
+    writeJSON(file, data[key]);
+    restored.push(key);
+  }
+  if (data.settings && typeof data.settings === 'object') {
+    const s = {
+      announcement: typeof data.settings.announcement === 'string' ? data.settings.announcement : '',
+      registrationOpen: data.settings.registrationOpen !== false,
+    };
+    writeSettings(s);
+    restored.push('settings');
+  }
+  if (restored.length === 0) return res.json({ ok: false, msg: '备份中没有可恢复的数据' });
+
+  // 恢复后重新校准 ID 计数器，避免后续 id 冲突
+  initCounter();
+  res.json({ ok: true, msg: `已恢复 ${restored.length} 项数据，请刷新页面`, restored });
+});
+
 // ─── User status check API ───
 app.get('/api/user/status', (req, res) => {
   const userId = parseInt(req.query.userId) || 0;

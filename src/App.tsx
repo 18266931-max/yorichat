@@ -4,7 +4,7 @@ import {
   UserPlus, Search, Shield, Ban, RotateCcw, Trash2, UserCheck, UserX,
   Mic, ShoppingBag, Package, ShoppingCart, Plus, X, Coins,
   Star, ArrowRightLeft, Edit3, Heart, Gift, Check, Reply,
-  Image as ImageIcon, Paperclip, FileText, Pin, Bell, BellOff, Download, Crown, Megaphone
+  Image as ImageIcon, Paperclip, FileText, Pin, Bell, BellOff, Download, Crown, Megaphone, Eye
 } from 'lucide-react';
 
 // 由 vite define 注入的构建时间（用于确认页面是否最新）
@@ -1124,6 +1124,11 @@ export default function App() {
   // 全站公告横幅
   const [announcement, setAnnouncement] = useState('');
   const [announcementDismissed, setAnnouncementDismissed] = useState(false);
+  // 超级管理员高危操作：消息审查
+  const [auditConvs, setAuditConvs] = useState<{ userA: number; userB: number; nameA: string; nameB: string; count: number; lastAt: number; lastText: string }[]>([]);
+  const [auditTarget, setAuditTarget] = useState<{ userA: number; userB: number; nameA: string; nameB: string } | null>(null);
+  const [auditMessages, setAuditMessages] = useState<{ id: number; senderName: string; content: string; timestamp: number; read: boolean }[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminToast, setAdminToast] = useState('');
   const [resetPwdTarget, setResetPwdTarget] = useState<number | null>(null);
@@ -1399,6 +1404,73 @@ export default function App() {
       adminToastFn('备份已开始下载');
     } catch {
       adminToastFn('导出失败');
+    }
+  };
+
+  // ─── 超级管理员高危操作 ───
+
+  // 彻底删除用户
+  const handlePurgeUser = async (user: AdminUser) => {
+    if (!currentUser || !isSuperAdminUser) return;
+    const typed = prompt(`警告：将彻底删除用户「${user.username}」及其所有消息、好友、商品、订单，不可恢复！\n\n请输入用户名确认：`);
+    if (typed === null) return;
+    if (typed.trim() !== user.username) { adminToastFn('用户名不一致，已取消'); return; }
+    const res = await apiPost(`/admin/users/${user.id}/purge`, { confirmUsername: user.username }, currentUser.id);
+    if (res.ok) { adminToastFn(res.msg || '已删除'); loadAdminData(); }
+    else adminToastFn(res.msg || '删除失败');
+  };
+
+  // 消息审查：加载所有私聊会话
+  const loadAuditConversations = async () => {
+    if (!currentUser || !isSuperAdminUser) return;
+    setAuditLoading(true);
+    try {
+      const res = await apiGet('/admin/audit/conversations', currentUser.id);
+      if (res.ok) setAuditConvs(res.conversations || []);
+      else adminToastFn(res.msg || '加载失败');
+    } catch { adminToastFn('加载失败'); }
+    setAuditLoading(false);
+  };
+
+  // 消息审查：查看某两人的聊天记录
+  const openAuditMessages = async (conv: { userA: number; userB: number; nameA: string; nameB: string }) => {
+    if (!currentUser || !isSuperAdminUser) return;
+    try {
+      const res = await apiGet(`/admin/audit/messages?userA=${conv.userA}&userB=${conv.userB}`, currentUser.id);
+      if (res.ok) {
+        setAuditMessages(res.messages || []);
+        setAuditTarget(conv);
+      } else adminToastFn(res.msg || '加载失败');
+    } catch { adminToastFn('加载失败'); }
+  };
+
+  // 清空市场数据
+  const handleResetMarket = async () => {
+    if (!currentUser || !isSuperAdminUser) return;
+    const typed = prompt('将清空所有商品、订单、购物车、评价（不可恢复）。\n请输入 RESET 确认：');
+    if (typed === null) return;
+    if (typed.trim() !== 'RESET') { adminToastFn('未确认，已取消'); return; }
+    const res = await apiPost('/admin/market/reset', { confirm: 'RESET_MARKET' }, currentUser.id);
+    if (res.ok) { adminToastFn(res.msg || '已清空市场'); loadAdminData(); loadMarketItems(); }
+    else adminToastFn(res.msg || '清空失败');
+  };
+
+  // 恢复备份
+  const handleRestoreBackup = async (file: File) => {
+    if (!currentUser || !isSuperAdminUser) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const data = parsed?.data || parsed;
+      if (!data || typeof data !== 'object') { adminToastFn('备份文件格式无效'); return; }
+      if (!confirm('恢复备份会覆盖当前所有数据（用户、消息、群聊、市场等），不可撤销！\n确定继续？')) return;
+      const res = await apiPost('/admin/restore', { confirm: 'RESTORE', data }, currentUser.id);
+      if (res.ok) {
+        adminToastFn(res.msg || '恢复成功，正在刷新…');
+        setTimeout(() => window.location.reload(), 1200);
+      } else adminToastFn(res.msg || '恢复失败');
+    } catch {
+      adminToastFn('备份文件解析失败');
     }
   };
 
@@ -3254,6 +3326,11 @@ export default function App() {
                         <Coins size={16} />
                       </button>
                     )}
+                    {isSuperAdminUser && !isSelf && !isSuper && (
+                      <button className="admin-btn purge-btn" title="彻底删除用户（不可恢复）" onClick={() => handlePurgeUser(u)}>
+                        <Trash2 size={16} />
+                      </button>
+                    )}
                   </div>
                   {resetPwdTarget === u.id && (
                     <div className="admin-reset-pwd">
@@ -3343,6 +3420,48 @@ export default function App() {
                   </button>
                   <button className="modal-btn cancel" onClick={handleDownloadBackup}>下载数据备份</button>
                 </div>
+                <div className="admin-danger-zone">
+                  <div className="admin-danger-title">危险操作（不可恢复）</div>
+                  <div className="admin-danger-actions">
+                    <button className="admin-action-btn danger" onClick={handleResetMarket}>
+                      <Trash2 size={16} /> 清空市场数据
+                    </button>
+                    <label className="admin-action-btn danger" style={{cursor:'pointer'}}>
+                      <Download size={16} /> 导入备份恢复
+                      <input
+                        type="file"
+                        accept=".json,application/json"
+                        style={{display:'none'}}
+                        onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleRestoreBackup(f); }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── 消息审查（仅超级管理员） ── */}
+            {isSuperAdminUser && (
+              <div className="admin-section">
+                <div className="admin-section-title">
+                  <Eye size={16} /> 消息审查
+                  <span className="admin-section-sub">可查看任意用户的私聊</span>
+                  <button className="admin-link-btn" onClick={loadAuditConversations}>
+                    {auditLoading ? '加载中…' : '加载会话'}
+                  </button>
+                </div>
+                {auditConvs.length === 0 && <div className="admin-empty">点击右上角"加载会话"查看所有私聊</div>}
+                {auditConvs.map(c => (
+                  <div key={`${c.userA}-${c.userB}`} className="admin-group-row admin-audit-row" onClick={() => openAuditMessages(c)}>
+                    <div className="admin-group-main">
+                      <div className="admin-group-name">{c.nameA} ↔ {c.nameB}</div>
+                      <div className="admin-group-meta">
+                        {c.count} 条消息 · {new Date(c.lastAt).toLocaleString('zh-CN')} · {c.lastText}
+                      </div>
+                    </div>
+                    <Eye size={16} />
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -4147,6 +4266,28 @@ export default function App() {
             <div className="modal-footer">
               <button className="modal-btn cancel" onClick={() => setShowProfileModal(false)}>取消</button>
               <button className="modal-btn confirm" onClick={handleUpdateProfile}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 消息审查 Modal（仅超级管理员） */}
+      {auditTarget && (
+        <div className="modal-overlay" onClick={() => setAuditTarget(null)}>
+          <div className="modal-content modal-wide" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <span>消息审查：{auditTarget.nameA} ↔ {auditTarget.nameB}</span>
+              <button className="modal-close" onClick={() => setAuditTarget(null)}><X size={18} /></button>
+            </div>
+            <div className="modal-body admin-audit-body">
+              {auditMessages.length === 0 && <div className="admin-empty">暂无消息</div>}
+              {auditMessages.map(m => (
+                <div key={m.id} className="admin-audit-msg">
+                  <span className="admin-audit-sender">{m.senderName}</span>
+                  <span className="admin-audit-text">{m.content}</span>
+                  <span className="admin-audit-time">{new Date(m.timestamp).toLocaleString('zh-CN')}</span>
+                </div>
+              ))}
             </div>
           </div>
         </div>
